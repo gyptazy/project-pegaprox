@@ -42,6 +42,9 @@ PegaProx is a powerful web-based management interface for Proxmox VE clusters. M
 - 📸 **Snapshots** - Create and restore snapshots
 - 💾 **Backups** - Schedule and manage backups
 - 🖱️ **noVNC Console** - Direct browser-based console access
+- ⚖️ **Load Balancing** - Automatic VM distribution across nodes
+- 🔁 **High Availability** - Auto-restart VMs on node failure
+- 📍 **Affinity Rules** - Keep VMs together or apart on hosts
 
 ### Security & Access Control
 - 👥 **Multi-User Support** - Role-based access control (Admin, Operator, Viewer)
