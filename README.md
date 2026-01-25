@@ -117,6 +117,9 @@ python3 pegaprox_multi_cluster.py
 
 **Option 1: Update Script (Recommended)**
 ```bash
+#Go in Folder
+cd /opt/PegaProx
+
 #Download it
 curl -O https://raw.githubusercontent.com/PegaProx/project-pegaprox/refs/heads/main/update.sh
 
