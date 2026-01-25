@@ -215,7 +215,7 @@ echo -e "${BLUE}╚════════════════════�
 echo -e "\n${YELLOW}Next steps:${NC}"
 echo -e "  1. Copy your files to $INSTALL_DIR:"
 echo -e "     ${BLUE}cp $PYTHON_FILE $INSTALL_DIR/${NC}"
-echo -e "     ${BLUE}cp index.html $INSTALL_DIR/web/${NC}"
+echo -e "     ${BLUE}cp web/index.html $INSTALL_DIR/web/${NC}"
 echo ""
 echo -e "  2. (Optional) Download static files for offline mode:"
 echo -e "     ${BLUE}cd $INSTALL_DIR && ./venv/bin/python3 $PYTHON_FILE --download-static${NC}"
