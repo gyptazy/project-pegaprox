@@ -137,19 +137,38 @@ chmod +x deploy.sh build.sh update.sh 2>/dev/null || true
 echo ""
 echo -n "Installing Python packages... "
 
-# Try different pip methods
-if [ -f "venv/bin/pip" ]; then
-    # Virtual environment
-    venv/bin/pip install -q -r requirements.txt 2>/dev/null && echo -e "${GREEN}OK${NC}" || echo -e "${YELLOW}Warning${NC}"
-elif command -v pip3 &> /dev/null; then
-    # System pip with sudo
-    if [ "$EUID" -eq 0 ]; then
-        pip3 install -q -r requirements.txt 2>/dev/null && echo -e "${GREEN}OK${NC}" || echo -e "${YELLOW}Warning${NC}"
-    else
-        pip3 install -q --user -r requirements.txt 2>/dev/null && echo -e "${GREEN}OK${NC}" || echo -e "${YELLOW}Warning${NC}"
-    fi
+# Try different pip methods - cover all possible setups
+PIP_SUCCESS=false
+
+# Method 1: Virtual environment with python -m pip (recommended)
+if [ -f "venv/bin/python" ] && [ "$PIP_SUCCESS" = false ]; then
+    ./venv/bin/python -m pip install -q -r requirements.txt 2>/dev/null && PIP_SUCCESS=true
+fi
+
+# Method 2: Virtual environment with direct pip
+if [ -f "venv/bin/pip" ] && [ "$PIP_SUCCESS" = false ]; then
+    ./venv/bin/pip install -q -r requirements.txt 2>/dev/null && PIP_SUCCESS=true
+fi
+
+# Method 3: System pip3 (as root)
+if [ "$EUID" -eq 0 ] && command -v pip3 &> /dev/null && [ "$PIP_SUCCESS" = false ]; then
+    pip3 install -q -r requirements.txt 2>/dev/null && PIP_SUCCESS=true
+fi
+
+# Method 4: System pip3 with --user (non-root)
+if command -v pip3 &> /dev/null && [ "$PIP_SUCCESS" = false ]; then
+    pip3 install -q --user -r requirements.txt 2>/dev/null && PIP_SUCCESS=true
+fi
+
+# Method 5: python3 -m pip fallback
+if command -v python3 &> /dev/null && [ "$PIP_SUCCESS" = false ]; then
+    python3 -m pip install -q --user -r requirements.txt 2>/dev/null && PIP_SUCCESS=true
+fi
+
+if [ "$PIP_SUCCESS" = true ]; then
+    echo -e "${GREEN}OK${NC}"
 else
-    echo -e "${YELLOW}Skipped (pip not found)${NC}"
+    echo -e "${YELLOW}Warning - install manually: pip install -r requirements.txt${NC}"
 fi
 
 # Restart service
