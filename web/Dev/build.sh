@@ -4,6 +4,8 @@
 # ============================================================================
 # 
 # LW: Created 25.01.2026 with help from Claude (AI)
+# @gyptazy: Modified 26.01.2026 for path evaluation and minor fixes
+#
 # Was tired of waiting 15 seconds for Babel to compile every page load also issues lol
 #
 # What this does:
@@ -25,7 +27,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
 
 # Colors for pretty output
 RED='\033[0;31m'
@@ -123,6 +126,9 @@ fi
 
 echo -e "${BLUE}→ Extracting and compiling JSX...${NC}"
 
+export PEGAPROX_BUILD_DIR="$BUILD_DIR"
+export PEGAPROX_PROJECT_ROOT="$PROJECT_ROOT"
+
 # Python does the heavy lifting - Claude wrote most of this part
 # Tried doing it in pure bash but the escaping was a nightmare
 python3 << 'PYTHON_SCRIPT'
@@ -130,9 +136,14 @@ import os
 import subprocess
 import sys
 
-script_dir = os.getcwd()
-build_dir = os.path.join(script_dir, '.build')
-web_dir = os.path.join(script_dir, 'web')
+build_dir = os.environ.get("PEGAPROX_BUILD_DIR")
+project_root = os.environ.get("PEGAPROX_PROJECT_ROOT")
+
+if not build_dir or not project_root:
+    print("ERROR: Build environment variables not set")
+    sys.exit(1)
+
+web_dir = os.path.join(project_root, 'web')
 
 # Read the original index.html
 with open(os.path.join(web_dir, 'index.html.original'), 'r', encoding='utf-8') as f:
