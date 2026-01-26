@@ -15,9 +15,9 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.1-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-0.6.1-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.8+-green" alt="Python"/>
-  <img src="https://img.shields.io/badge/license-AGPL-3.0-License-orange" alt="License"/>
+  <img src="https://img.shields.io/badge/license-AGPL--3.0--License-orange" alt="License"/>
 </p>
 
 ---
@@ -27,7 +27,7 @@
 PegaProx is a powerful web-based management interface for Proxmox VE clusters. Manage multiple clusters from a single dashboard with features like live monitoring, VM management, automated tasks, and more.
 
 <p align="center">
-  <img src="https://pegaprox.com/screenshots/dashboard.png" alt="Dashboard Screenshot" width="800"/>
+  <img src="https://pegaprox.com/pictures/pegaprox.png" alt="Dashboard Screenshot" width="800"/>
 </p>
 
 ## ✨ Features
@@ -134,6 +134,10 @@ or
 
 **Option 2: Manual**
 ```bash
+
+#Go in the Folder
+cd /opt/PegaProx
+
 curl -O https://raw.githubusercontent.com/PegaProx/project-pegaprox/main/pegaprox_multi_cluster.py
 curl -O web/index.html https://raw.githubusercontent.com/PegaProx/project-pegaprox/main/web/index.html
 curl -O https://raw.githubusercontent.com/PegaProx/project-pegaprox/main/requirements.txt
