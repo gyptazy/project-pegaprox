@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.6.1-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-0.6.3-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.8+-green" alt="Python"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0--License-orange" alt="License"/>
 </p>
@@ -39,6 +39,7 @@ PegaProx is a powerful web-based management interface for Proxmox VE clusters. M
 
 ### VM & Container Management
 - ▶️ **Quick Actions** - Start, stop, restart VMs and containers
+- ⚙️ **VM Configuration** - Edit CPU, RAM, disks, network, EFI, Secure Boot & more
 - 📸 **Snapshots** - Create and restore snapshots
 - 💾 **Backups** - Schedule and manage backups
 - 🖱️ **noVNC Console** - Direct browser-based console access
