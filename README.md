@@ -189,7 +189,7 @@ Afterwards, please proceed with the following steps:
 ├── web/
 │   └── index.html              # Frontend
 ├── config/
-│   ├── pegaprox.db             # SQLite database (encrypted)
+│   ├── pegaprox.db             # SQLite database (credentials encrypted)
 │   └── ssl/                    # SSL certificates
 ├── logs/                       # Application logs
 └── static/                     # Offline assets (optional)
@@ -197,7 +197,8 @@ Afterwards, please proceed with the following steps:
 
 ## 🔒 Security Notes
 
-- All data is encrypted with AES-256-GCM
+- Credentials (Cluster PW, SSH Keys, TOTP, LDAP Bind) → AES-256-GCM
+- API Tokens → SHA-256 Hash
 - Passwords are hashed with Argon2id
 - HTTPS is required for production use
 - Session tokens expire after inactivity
