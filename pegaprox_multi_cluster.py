@@ -47,7 +47,7 @@ Security:
 - Login rate limiting: ✓ (IP + username based)
 - Session management: ✓ (auto-expiry, encrypted storage)
 - Password hashing: ✓ (Argon2id / PBKDF2 fallback)
-- Data encryption: ✓ (AES-256-GCM)
+- Data encryption: ✓ (AES-256-GCM for credentials, SHA-256 for tokens)
 - CSRF/XSS protection: ✓ (CSP headers, secure cookies)
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -697,7 +697,16 @@ class PegaProxDB:
                 theme TEXT DEFAULT '',
                 language TEXT DEFAULT '',
                 ui_layout TEXT DEFAULT 'modern',
-                taskbar_auto_expand INTEGER DEFAULT 1
+                taskbar_auto_expand INTEGER DEFAULT 1,
+                auth_source TEXT DEFAULT 'local',
+                display_name TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                ldap_dn TEXT DEFAULT '',
+                last_ldap_sync TEXT DEFAULT '',
+                tenant_permissions TEXT DEFAULT '{}',
+                denied_permissions TEXT DEFAULT '[]',
+                oidc_sub TEXT DEFAULT '',
+                last_oidc_sync TEXT DEFAULT ''
             )
         ''')
         
@@ -1168,6 +1177,71 @@ class PegaProxDB:
                     logging.info("Added taskbar_auto_expand column to users table")
                 except Exception as e:
                     logging.error(f"Failed to add taskbar_auto_expand column: {e}")
+            
+            # LW: Feb 2026 - LDAP auth fields
+            if 'auth_source' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN auth_source TEXT DEFAULT 'local'")
+                    logging.info("Added auth_source column to users table")
+                except Exception as e:
+                    logging.error(f"Failed to add auth_source column: {e}")
+            
+            if 'display_name' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN display_name TEXT DEFAULT ''")
+                    logging.info("Added display_name column to users table")
+                except Exception as e:
+                    logging.error(f"Failed to add display_name column: {e}")
+            
+            if 'email' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''")
+                    logging.info("Added email column to users table")
+                except Exception as e:
+                    logging.error(f"Failed to add email column: {e}")
+            
+            if 'ldap_dn' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN ldap_dn TEXT DEFAULT ''")
+                    logging.info("Added ldap_dn column to users table")
+                except Exception as e:
+                    logging.error(f"Failed to add ldap_dn column: {e}")
+            
+            if 'last_ldap_sync' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN last_ldap_sync TEXT DEFAULT ''")
+                    logging.info("Added last_ldap_sync column to users table")
+                except Exception as e:
+                    logging.error(f"Failed to add last_ldap_sync column: {e}")
+            
+            # NS: Feb 2026 - OIDC and tenant permission fields
+            if 'tenant_permissions' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN tenant_permissions TEXT DEFAULT '{}'")
+                    logging.info("Added tenant_permissions column to users table")
+                except Exception as e:
+                    logging.error(f"Failed to add tenant_permissions column: {e}")
+            
+            if 'denied_permissions' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN denied_permissions TEXT DEFAULT '[]'")
+                    logging.info("Added denied_permissions column to users table")
+                except Exception as e:
+                    logging.error(f"Failed to add denied_permissions column: {e}")
+            
+            if 'oidc_sub' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN oidc_sub TEXT DEFAULT ''")
+                    logging.info("Added oidc_sub column to users table")
+                except Exception as e:
+                    logging.error(f"Failed to add oidc_sub column: {e}")
+            
+            if 'last_oidc_sync' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN last_oidc_sync TEXT DEFAULT ''")
+                    logging.info("Added last_oidc_sync column to users table")
+                except Exception as e:
+                    logging.error(f"Failed to add last_oidc_sync column: {e}")
                     
         except Exception as e:
             logging.error(f"Error checking users schema: {e}")
@@ -2333,7 +2407,7 @@ class PegaProxDB:
                 'password_hash': password_hash,
                 'role': row['role'],
                 'permissions': json.loads(row_dict.get('permissions') or '[]'),
-                'tenant': row_dict.get('tenant'),
+                'tenant_id': row_dict.get('tenant') or DEFAULT_TENANT_ID,  # NS: DB stores 'tenant', code uses 'tenant_id'
                 'created_at': row_dict.get('created_at'),
                 'last_login': row_dict.get('last_login'),
                 'password_expiry': row_dict.get('password_expiry'),
@@ -2347,6 +2421,17 @@ class PegaProxDB:
                 'language': row_dict.get('language', ''),
                 'ui_layout': row_dict.get('ui_layout', 'modern'),
                 'taskbar_auto_expand': bool(row_dict.get('taskbar_auto_expand', 1)),
+                # LW: Feb 2026 - LDAP fields
+                'auth_source': row_dict.get('auth_source', 'local'),
+                'display_name': row_dict.get('display_name', ''),
+                'email': row_dict.get('email', ''),
+                'ldap_dn': row_dict.get('ldap_dn', ''),
+                'last_ldap_sync': row_dict.get('last_ldap_sync', ''),
+                # NS: Feb 2026 - OIDC and tenant permission fields
+                'tenant_permissions': json.loads(row_dict.get('tenant_permissions') or '{}'),
+                'denied_permissions': json.loads(row_dict.get('denied_permissions') or '[]'),
+                'oidc_sub': row_dict.get('oidc_sub', ''),
+                'last_oidc_sync': row_dict.get('last_oidc_sync', ''),
             }
         
         return users
@@ -2376,7 +2461,7 @@ class PegaProxDB:
             'password_hash': password_hash,
             'role': row_dict.get('role', 'viewer'),
             'permissions': json.loads(row_dict.get('permissions') or '[]'),
-            'tenant': row_dict.get('tenant'),
+            'tenant_id': row_dict.get('tenant') or DEFAULT_TENANT_ID,  # NS: DB stores 'tenant', code uses 'tenant_id'
             'created_at': row_dict.get('created_at'),
             'last_login': row_dict.get('last_login'),
             'password_expiry': row_dict.get('password_expiry'),
@@ -2389,6 +2474,16 @@ class PegaProxDB:
             'language': row_dict.get('language', ''),
             'ui_layout': row_dict.get('ui_layout', 'modern'),
             'taskbar_auto_expand': bool(row_dict.get('taskbar_auto_expand', 1)),  # NS: Feb 2026
+            'auth_source': row_dict.get('auth_source', 'local'),
+            'display_name': row_dict.get('display_name', ''),
+            'email': row_dict.get('email', ''),
+            'ldap_dn': row_dict.get('ldap_dn', ''),
+            'last_ldap_sync': row_dict.get('last_ldap_sync', ''),
+            # NS: Feb 2026 - OIDC and tenant permission fields
+            'tenant_permissions': json.loads(row_dict.get('tenant_permissions') or '{}'),
+            'denied_permissions': json.loads(row_dict.get('denied_permissions') or '[]'),
+            'oidc_sub': row_dict.get('oidc_sub', ''),
+            'last_oidc_sync': row_dict.get('last_oidc_sync', ''),
         }
     
     def save_user(self, username: str, data: dict):
@@ -2401,17 +2496,21 @@ class PegaProxDB:
             (username, password_salt, password_hash, role, permissions, tenant, 
              created_at, last_login, password_expiry, 
              totp_secret_encrypted, totp_pending_secret_encrypted, totp_enabled, force_password_change,
-             enabled, theme, language, ui_layout, taskbar_auto_expand)
+             enabled, theme, language, ui_layout, taskbar_auto_expand,
+             auth_source, display_name, email, ldap_dn, last_ldap_sync,
+             tenant_permissions, denied_permissions, oidc_sub, last_oidc_sync)
             VALUES (?, ?, ?, ?, ?, ?, 
                     COALESCE((SELECT created_at FROM users WHERE username = ?), ?), 
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?)
         ''', (
             username,
             data.get('password_salt', ''),
             data.get('password_hash', ''),
             data.get('role', 'viewer'),
             json.dumps(data.get('permissions', [])),
-            data.get('tenant'),
+            data.get('tenant_id') or data.get('tenant'),  # NS: Accept both key names
             username, now,
             data.get('last_login'),
             data.get('password_expiry'),
@@ -2423,7 +2522,17 @@ class PegaProxDB:
             data.get('theme', ''),
             data.get('language', ''),
             data.get('ui_layout', 'modern'),
-            1 if data.get('taskbar_auto_expand', True) else 0  # NS: Feb 2026
+            1 if data.get('taskbar_auto_expand', True) else 0,  # NS: Feb 2026
+            data.get('auth_source', 'local'),  # LW: Feb 2026 - LDAP
+            data.get('display_name', ''),
+            data.get('email', ''),
+            data.get('ldap_dn', ''),
+            data.get('last_ldap_sync', ''),
+            # NS: Feb 2026 - OIDC and tenant permission fields
+            json.dumps(data.get('tenant_permissions', {})),
+            json.dumps(data.get('denied_permissions', [])),
+            data.get('oidc_sub', ''),
+            data.get('last_oidc_sync', ''),
         ))
         self.conn.commit()
     
@@ -3331,6 +3440,27 @@ def _ssh_track_connection(conn_type: str, delta: int):
     """Track SSH connection count"""
     with _ssh_connection_lock:
         _ssh_active_connections[conn_type] = max(0, _ssh_active_connections[conn_type] + delta)
+
+# NS: Feb 2026 - Rate limiter for authenticated security actions
+# Prevents brute-force of TOTP codes, passwords via 2FA disable/password change
+# These endpoints require a session, but a stolen session could be used to brute-force
+_auth_action_attempts = {}  # key -> [timestamps]
+_auth_action_lock = threading.Lock()
+
+def check_auth_action_rate_limit(key: str, max_attempts: int = 5, window: int = 300) -> bool:
+    """Simple sliding window rate limiter for auth actions (2FA verify, pwd change, etc.)
+    MK: 5 attempts per 5 min by default, should be enough for typos but stops brute force
+    """
+    now = time.time()
+    with _auth_action_lock:
+        if key not in _auth_action_attempts:
+            _auth_action_attempts[key] = []
+        attempts = [t for t in _auth_action_attempts[key] if now - t < window]
+        if len(attempts) >= max_attempts:
+            return False
+        attempts.append(now)
+        _auth_action_attempts[key] = attempts
+        return True
 
 # Global sessions store
 # MK: this is in-memory, will be lost on restart
@@ -4697,6 +4827,8 @@ class PegaProxManager:
         self.connection_error = None
         self._consecutive_failures = 0  # NS: track failed requests for smarter disconnect detection
         self._disabled_check_counter = 0  # LW: for checking connection even when disabled
+        self._last_reconnect_attempt = 0  # NS: Feb 2026 - throttle reconnection attempts in broadcast loop
+        self._consecutive_empty_responses = 0  # NS: Feb 2026 - detect stale tickets (connected but empty data)
         
         # Default timeout for API requests
         self.api_timeout = 10
@@ -5287,7 +5419,7 @@ class PegaProxManager:
             self.logger.info(f"[OK] Cluster is balanced. Score difference {score_diff:.2f} <= threshold {threshold_value}")
             return False, None, None
     
-    def find_migration_candidate(self, source_node: str, target_node: str) -> Optional[Dict]:
+    def find_migration_candidate(self, source_node: str, target_node: str, exclude_vmids: list = None) -> Optional[Dict]:
         """
         Find the best VM to migrate from source to target node.
         
@@ -5304,7 +5436,10 @@ class PegaProxManager:
         
         MK: Container migrations are tricky - they ALWAYS restart.
         We learned this the hard way in production...
+        LW: Feb 2026 - exclude_vmids used for multi-migration cycles to avoid re-picking
         """
+        if exclude_vmids is None:
+            exclude_vmids = []
         vms = self.get_vm_resources()
         if not vms:
             return None
@@ -5320,7 +5455,8 @@ class PegaProxManager:
             if vm.get('node') == source_node and 
             vm.get('status') == 'running' and
             vm.get('type') in ['qemu', 'lxc'] and
-            vm.get('vmid') not in excluded_vmids  # MK: Skip excluded VMs
+            vm.get('vmid') not in excluded_vmids and  # MK: Skip excluded VMs
+            vm.get('vmid') not in exclude_vmids  # LW: Skip already-migrated VMs this cycle
         ]
         
         # Log if any VMs were excluded
@@ -11660,7 +11796,24 @@ echo "AGENT_INSTALLED_OK"
                     },
                     'timestamps': []
                 }
-                
+
+                # Check for pressure stall data (PSI)
+                pressure_keys = [
+                    'pressurecpusome', 'pressurecpufull',
+                    'pressurememorysome', 'pressurememoryfull',
+                    'pressureiosome', 'pressureiofull'
+                ]
+                active_pressure_keys = []
+
+                # Check first valid point to determine available metrics
+                if rrd_data:
+                    first_point = next((p for p in rrd_data if p), None)
+                    if first_point:
+                        for k in pressure_keys:
+                            if k in first_point:
+                                active_pressure_keys.append(k)
+                                formatted_data['metrics'][k] = []
+
                 for point in rrd_data:
                     if not point:
                         continue
@@ -11685,6 +11838,10 @@ echo "AGENT_INSTALLED_OK"
                     # Network I/O (bytes/s)
                     formatted_data['metrics']['net_in'].append(point.get('netin', 0) or 0)
                     formatted_data['metrics']['net_out'].append(point.get('netout', 0) or 0)
+
+                    # Pressure Stall (PSI)
+                    for k in active_pressure_keys:
+                        formatted_data['metrics'][k].append(point.get(k, 0) or 0)
                 
                 return {'success': True, 'data': formatted_data}
             else:
@@ -13050,7 +13207,24 @@ echo "AGENT_INSTALLED_OK"
                     },
                     'timestamps': []
                 }
-                
+
+                # Check for pressure stall data (PSI)
+                pressure_keys = [
+                    'pressurecpusome', 'pressurecpufull',
+                    'pressurememorysome', 'pressurememoryfull',
+                    'pressureiosome', 'pressureiofull'
+                ]
+                active_pressure_keys = []
+
+                # Check first valid point to determine available metrics
+                if rrd_data:
+                    first_point = next((p for p in rrd_data if p), None)
+                    if first_point:
+                        for k in pressure_keys:
+                            if k in first_point:
+                                active_pressure_keys.append(k)
+                                formatted_data['metrics'][k] = []
+
                 for point in rrd_data:
                     if not point:
                         continue
@@ -13099,6 +13273,10 @@ echo "AGENT_INSTALLED_OK"
                     else:
                         rootfs_percent = 0
                     formatted_data['metrics']['rootfs'].append(round(rootfs_percent, 2))
+
+                    # Pressure Stall (PSI)
+                    for k in active_pressure_keys:
+                        formatted_data['metrics'][k].append(point.get(k, 0) or 0)
                 
                 return formatted_data
             return {'error': 'Failed to get RRD data'}
@@ -13774,10 +13952,14 @@ echo "AGENT_INSTALLED_OK"
             return {'success': False, 'error': str(e)}
     
     def get_node_apt_updates(self, node: str) -> List[Dict]:
-        """Get available APT updates"""
+        """Get available APT updates
+        
+        MK: Feb 2026 - Raises exception on failure instead of returning []
+        so the caller can distinguish 'no updates' from 'check failed'
+        """
         if not self.is_connected:
             if not self.connect_to_proxmox():
-                return []
+                raise ConnectionError(f"Not connected to cluster")
         
         try:
             host = self.current_host or self.config.host
@@ -13786,10 +13968,13 @@ echo "AGENT_INSTALLED_OK"
             
             if response.status_code == 200:
                 return response.json().get('data', [])
-            return []
+            # NS: Don't silently return [] - let the caller know it failed
+            raise Exception(f"API returned {response.status_code}")
+        except ConnectionError:
+            raise
         except Exception as e:
-            self.logger.error(f"Error getting APT updates: {e}")
-            return []
+            self.logger.error(f"Error getting APT updates for {node}: {e}")
+            raise
     
     def refresh_node_apt(self, node: str) -> Dict[str, Any]:
         """Refresh APT package database"""
@@ -13835,7 +14020,9 @@ echo "AGENT_INSTALLED_OK"
         2. If difference > threshold, find a VM to migrate
         3. Move smallest suitable VM from loaded -> less loaded node
         
-        Pretty simple but works well in practice
+        MK: Feb 2026 - Now supports up to 3 migrations per cycle for larger clusters.
+        After each migration, scores are re-evaluated to avoid over-correcting.
+        LW: Number of migrations scales with score difference and cluster size.
         """
         try:
             self.logger.info("=" * 60)
@@ -13853,18 +14040,75 @@ echo "AGENT_INSTALLED_OK"
             if maintenance_nodes:
                 self.logger.info(f"[MAINT] Nodes in maintenance: {', '.join(maintenance_nodes)}")
             
-            # check balancing is needed
-            needs_balance, source_node, target_node = self.check_balance_needed(node_status)
+            # NS: Calculate max migrations per cycle based on cluster size and score diff
+            # Small clusters (2-3 nodes): max 1 migration
+            # Medium clusters (4-6 nodes): max 2 migrations
+            # Large clusters (7+ nodes): max 3 migrations
+            config_excluded = getattr(self.config, 'excluded_nodes', []) or []
+            active_node_count = sum(
+                1 for n, d in node_status.items() 
+                if d['status'] == 'online' 
+                and not d.get('maintenance_mode', False) 
+                and n not in config_excluded
+            )
             
-            if needs_balance and self.config.auto_migrate:
-                # Find VM to migrate
-                vm = self.find_migration_candidate(source_node, target_node)
+            if active_node_count >= 7:
+                max_migrations = 3
+            elif active_node_count >= 4:
+                max_migrations = 2
+            else:
+                max_migrations = 1
+            
+            self.logger.info(f"Active nodes: {active_node_count}, Max migrations per cycle: {max_migrations}")
+            
+            migrations_done = 0
+            already_migrated_vmids = []  # LW: Track migrated VMs to avoid picking same one
+            
+            for migration_round in range(max_migrations):
+                # Re-fetch node status after each migration (scores changed!)
+                if migration_round > 0:
+                    self.logger.info(f"--- Re-evaluating balance (round {migration_round + 1}/{max_migrations}) ---")
+                    node_status = self.get_node_status()
+                    if not node_status:
+                        break
+                
+                # Check if balancing is needed
+                needs_balance, source_node, target_node = self.check_balance_needed(node_status)
+                
+                if not needs_balance:
+                    if migration_round == 0:
+                        pass  # Normal - already logged in check_balance_needed
+                    else:
+                        self.logger.info(f"[OK] Cluster balanced after {migrations_done} migration(s)")
+                    break
+                
+                if not self.config.auto_migrate:
+                    break
+                
+                # MK: Find migration candidate, excluding already migrated VMs
+                vm = self.find_migration_candidate(source_node, target_node, exclude_vmids=already_migrated_vmids)
                 
                 if vm:
-                    # Perform migration
-                    self.migrate_vm(vm, target_node)
+                    vmid = vm.get('vmid')
+                    vm_name = vm.get('name', 'unnamed')
+                    
+                    if max_migrations > 1:
+                        self.logger.info(f"[{migration_round + 1}/{max_migrations}] Migrating {vm_name} (VMID {vmid}): {source_node} → {target_node}")
+                    
+                    success = self.migrate_vm(vm, target_node)
+                    
+                    if success:
+                        migrations_done += 1
+                        already_migrated_vmids.append(vmid)
+                    else:
+                        self.logger.warning(f"Migration failed for {vm_name}, stopping further migrations this cycle")
+                        break
                 else:
                     self.logger.info("No suitable VM found for migration")
+                    break
+            
+            if migrations_done > 1:
+                self.logger.info(f"[SUMMARY] Completed {migrations_done} migration(s) in this cycle")
             
             self.last_run = datetime.now()
             self.logger.info(f"Balance check completed at {self.last_run}")
@@ -14264,7 +14508,7 @@ def verify_password(password: str, salt_b64: str, hash_b64: str) -> bool:
         # MK: try new iteration count first, then old for backwards compat
         for iterations in [600000, 100000]:
             key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, iterations)
-            if key == stored_hash:
+            if hmac.compare_digest(key, stored_hash):  # NS: timing-safe compare (was == before, oops)
                 return True
         
         return False
@@ -14276,6 +14520,11 @@ def verify_password(password: str, salt_b64: str, hash_b64: str) -> bool:
 def needs_password_rehash(salt_b64: str, hash_b64: str) -> bool:
     """check if pw needs upgrade to argon2"""
     if not ARGON2_AVAILABLE:
+        return False
+    
+    # NS: SECURITY - Don't rehash empty passwords (LDAP/OIDC users have no local password!)
+    # Without this check, LDAP passwords would get stored locally on login
+    if not salt_b64 or not hash_b64:
         return False
     
     # already argon2?
@@ -14830,14 +15079,18 @@ def require_auth(roles: list = None, perms: list = None):
             if not session:
                 return jsonify({'error': 'Unauthorized', 'code': 'AUTH_REQUIRED'}), 401
             
+            # NS: Feb 2026 - Check if user was disabled while session/token is still active
+            users = load_users()
+            user = users.get(session['user'], {})
+            if not user.get('enabled', True):
+                return jsonify({'error': 'Account is disabled', 'code': 'ACCOUNT_DISABLED'}), 401
+            
             # Check role if specified
             if roles and session['role'] not in roles:
                 return jsonify({'error': 'Forbidden', 'code': 'INSUFFICIENT_PERMISSIONS'}), 403
             
             # check permissions if specified
             if perms:
-                users = load_users()
-                user = users.get(session['user'], {})
                 for p in perms:
                     if not has_permission(user, p):
                         return jsonify({'error': 'Permission denied', 'code': 'MISSING_PERMISSION', 'required': p}), 403
@@ -14991,6 +15244,998 @@ users_db = {}
 # Oct 2025: Added TOTP 2FA support (NS wanted this)
 # ============================================
 
+# =============================================================================
+# LW: Feb 2026 - LDAP/Active Directory Authentication
+# Supports LDAP and AD with group-to-role mapping, JIT user provisioning,
+# and optional TLS/STARTTLS. Uses ldap3 (pure Python, no C deps).
+# MK: Users authenticated via LDAP get a local shadow account with role
+# mapped from LDAP groups. Local password is not set for LDAP users.
+# Code came from Claude after optimzing and tweaking it and reading docs until 2 am its working.
+# =============================================================================
+
+def get_ldap_settings() -> dict:
+    """Get LDAP configuration from server settings"""
+    settings = load_server_settings()
+    config = {
+        'enabled': settings.get('ldap_enabled', False),
+        'server': settings.get('ldap_server', ''),
+        'port': settings.get('ldap_port', 389),
+        'use_ssl': settings.get('ldap_use_ssl', False),
+        'use_starttls': settings.get('ldap_use_starttls', False),
+        'bind_dn': settings.get('ldap_bind_dn', ''),
+        'bind_password': get_db()._decrypt(settings.get('ldap_bind_password', '')),  # MK: Decrypt - stored encrypted since 0.6.5
+        'base_dn': settings.get('ldap_base_dn', ''),
+        'user_filter': settings.get('ldap_user_filter', '(&(objectClass=person)(sAMAccountName={username}))'),
+        'username_attribute': settings.get('ldap_username_attribute', 'sAMAccountName'),
+        'email_attribute': settings.get('ldap_email_attribute', 'mail'),
+        'display_name_attribute': settings.get('ldap_display_name_attribute', 'displayName'),
+        'group_base_dn': settings.get('ldap_group_base_dn', ''),
+        'group_filter': settings.get('ldap_group_filter', '(&(objectClass=group)(member={user_dn}))'),
+        'admin_group': settings.get('ldap_admin_group', ''),
+        'user_group': settings.get('ldap_user_group', ''),
+        'viewer_group': settings.get('ldap_viewer_group', ''),
+        'default_role': settings.get('ldap_default_role', ROLE_VIEWER),
+        'auto_create_users': settings.get('ldap_auto_create_users', True),
+        # MK: Feb 2026 - Custom group→role mappings for custom roles & tenants
+        # Format: [{"group_dn": "CN=...", "role": "custom_role_name", "tenant": "tenant_id", "permissions": [...]}]
+        'group_mappings': settings.get('ldap_group_mappings', []),
+    }
+    # NS: Feb 2026 - Debug log when LDAP is enabled but looks misconfigured
+    if config['enabled'] and (not config['server'] or not config['base_dn']):
+        logging.warning(f"[LDAP] Settings loaded but incomplete: enabled={config['enabled']}, "
+                       f"server='{config['server']}', base_dn='{config['base_dn']}'. "
+                       f"DB keys present: {[k for k in settings if k.startswith('ldap_')]}")
+    return config
+
+
+def ldap_authenticate(username: str, password: str) -> dict:
+    """Authenticate user against LDAP/Active Directory
+    
+    Returns dict with user info on success, or {'error': '...'} on failure.
+    NS: We do a two-step bind: first with service account to find the user DN,
+    then re-bind with the user's own credentials to verify password.
+    """
+    ldap_config = get_ldap_settings()
+    
+    if not ldap_config['enabled']:
+        return {'error': 'LDAP not enabled'}
+    
+    if not ldap_config['server'] or not ldap_config['base_dn']:
+        # NS: Feb 2026 - Better diagnostic: tell them WHAT is missing
+        missing = []
+        if not ldap_config['server']:
+            missing.append('server')
+        if not ldap_config['base_dn']:
+            missing.append('base_dn')
+        logging.warning(f"[LDAP] LDAP not configured - missing: {', '.join(missing)}. "
+                       f"Check that LDAP settings have been saved (not just tested). "
+                       f"enabled={ldap_config['enabled']}, server='{ldap_config['server']}', base_dn='{ldap_config['base_dn']}'")
+        return {'error': 'LDAP not configured'}
+    
+    # NS: SECURITY - Reject empty passwords (LDAP servers allow unauthenticated bind with empty password!)
+    if not password or not password.strip():
+        logging.warning(f"[LDAP] Rejected empty password for user '{username}'")
+        return {'error': 'Invalid LDAP credentials'}
+    
+    # MK: SECURITY - Sanitize username against LDAP injection
+    # LDAP special chars that can manipulate filters: * ( ) \ / NUL
+    ldap_dangerous_chars = ['*', '(', ')', '\\', '\x00', '/', '\n', '\r']
+    for char in ldap_dangerous_chars:
+        if char in username:
+            logging.warning(f"[LDAP] Rejected username with LDAP injection chars: '{username[:20]}'")
+            return {'error': 'Invalid username characters'}
+    
+    try:
+        import ldap3
+        from ldap3 import Server, Connection, ALL, SUBTREE, Tls
+        from ldap3.utils.conv import escape_filter_chars  # NS: Proper LDAP escaping
+        import ssl as ssl_module
+    except ImportError:
+        logging.error("[LDAP] ldap3 module not installed. Run: pip install ldap3")
+        return {'error': 'LDAP module not installed'}
+    
+    server_url = ldap_config['server']
+    port = int(ldap_config['port'])
+    
+    try:
+        # MK: Build server with optional TLS
+        tls_config = None
+        if ldap_config['use_ssl'] or ldap_config['use_starttls']:
+            tls_config = Tls(validate=ssl_module.CERT_NONE)  # LW: Allow self-signed certs
+        
+        server = Server(server_url, port=port, use_ssl=ldap_config['use_ssl'], 
+                       tls=tls_config, get_info=ALL, connect_timeout=10)
+        
+        # Step 1: Bind with service account to search for user
+        bind_dn = ldap_config['bind_dn']
+        bind_password = ldap_config['bind_password']
+        
+        # NS: STARTTLS has to happen BEFORE bind! auto_bind was sending creds in plaintext
+        # MK found this during the Feb audit... pretty bad tbh
+        use_starttls = ldap_config['use_starttls'] and not ldap_config['use_ssl']
+        
+        if bind_dn and bind_password:
+            conn = Connection(server, user=bind_dn, password=bind_password, raise_exceptions=True)
+        else:
+            # Anonymous bind (some LDAP servers allow this)
+            conn = Connection(server, raise_exceptions=True)
+        
+        conn.open()
+        if use_starttls:
+            conn.start_tls()
+        conn.bind()
+        
+        # Step 2: Search for user
+        # NS: SECURITY - Use ldap3's escape_filter_chars to prevent LDAP injection
+        safe_username = escape_filter_chars(username)
+        user_filter = ldap_config['user_filter'].replace('{username}', safe_username)
+        search_base = ldap_config['base_dn']
+        
+        attributes = [
+            ldap_config['username_attribute'],
+            ldap_config['email_attribute'],
+            ldap_config['display_name_attribute'],
+            'memberOf',  # NS: AD stores group membership directly on user
+            'dn'
+        ]
+        
+        conn.search(search_base, user_filter, search_scope=SUBTREE, attributes=attributes)
+        
+        if not conn.entries:
+            conn.unbind()
+            logging.info(f"[LDAP] User '{username}' not found in directory")
+            return {'error': 'User not found in LDAP'}
+        
+        user_entry = conn.entries[0]
+        user_dn = str(user_entry.entry_dn)
+        
+        # Extract user attributes
+        email = str(user_entry[ldap_config['email_attribute']]) if ldap_config['email_attribute'] in user_entry else ''
+        display_name = str(user_entry[ldap_config['display_name_attribute']]) if ldap_config['display_name_attribute'] in user_entry else username
+        
+        # Get group memberships from memberOf attribute (AD style)
+        member_of = []
+        if 'memberOf' in user_entry:
+            member_of = [str(g) for g in user_entry['memberOf']]
+        
+        conn.unbind()
+        
+        # Step 3: Verify user's password by binding with their credentials
+        # LW: This is the actual authentication step
+        try:
+            user_conn = Connection(server, user=user_dn, password=password, raise_exceptions=True)
+            user_conn.open()
+            if use_starttls:
+                user_conn.start_tls()
+            user_conn.bind()
+            user_conn.unbind()
+        except Exception as bind_err:
+            logging.info(f"[LDAP] Password verification failed for '{username}': {bind_err}")
+            return {'error': 'Invalid LDAP credentials'}
+        
+        # Step 4: If we also need to search for groups separately (not via memberOf)
+        if not member_of and ldap_config['group_base_dn']:
+            try:
+                group_conn = Connection(server, user=bind_dn, password=bind_password, raise_exceptions=True)
+                group_conn.open()
+                if use_starttls:
+                    group_conn.start_tls()
+                group_conn.bind()
+                group_filter = ldap_config['group_filter'].replace('{user_dn}', escape_filter_chars(user_dn))
+                group_conn.search(ldap_config['group_base_dn'], group_filter, 
+                                search_scope=SUBTREE, attributes=['cn', 'dn'])
+                member_of = [str(entry.entry_dn) for entry in group_conn.entries]
+                group_conn.unbind()
+            except Exception as e:
+                logging.warning(f"[LDAP] Group search failed: {e}")
+        
+        # Step 5: Map LDAP groups to PegaProx roles
+        role = ldap_config['default_role']
+        tenant = None
+        extra_permissions = []
+        tenant_permissions = {}
+        
+        # NS: Case-insensitive group DN comparison (AD is case-insensitive)
+        member_of_lower = [g.lower() for g in member_of]
+        
+        # MK: Check built-in group mappings first (admin > user > viewer priority)
+        admin_group = ldap_config['admin_group'].strip()
+        user_group = ldap_config['user_group'].strip()
+        viewer_group = ldap_config['viewer_group'].strip()
+        
+        if admin_group and admin_group.lower() in member_of_lower:
+            role = ROLE_ADMIN
+        elif user_group and user_group.lower() in member_of_lower:
+            role = ROLE_USER
+        elif viewer_group and viewer_group.lower() in member_of_lower:
+            role = ROLE_VIEWER
+        
+        # LW: Feb 2026 - Custom group mappings (override built-in if matched)
+        # These can map to custom roles, assign tenants, and add specific permissions
+        custom_mappings = ldap_config.get('group_mappings', [])
+        for mapping in custom_mappings:
+            map_group = (mapping.get('group_dn') or '').strip()
+            if map_group and map_group.lower() in member_of_lower:
+                # Custom mapping matched
+                if mapping.get('role'):
+                    role = mapping['role']
+                if mapping.get('tenant'):
+                    tenant = mapping['tenant']
+                if mapping.get('permissions'):
+                    extra_permissions.extend(mapping['permissions'])
+                # NS: Support per-tenant role assignment
+                if mapping.get('tenant') and mapping.get('tenant_role'):
+                    tenant_permissions[mapping['tenant']] = {
+                        'role': mapping['tenant_role'],
+                        'extra': mapping.get('permissions', [])  # MK: Must be 'extra' to match get_user_permissions()
+                    }
+                logging.info(f"[LDAP] Custom group mapping matched: {map_group} → role={mapping.get('role')}, tenant={mapping.get('tenant')}")
+        
+        # Clean up display values
+        if email and (email.startswith('[') or email == '[]'):
+            email = ''
+        if display_name and (display_name.startswith('[') or display_name == '[]'):
+            display_name = username
+        
+        logging.info(f"[LDAP] User '{username}' authenticated successfully (role={role}, groups={len(member_of)})")
+        
+        return {
+            'success': True,
+            'username': username,
+            'email': email,
+            'display_name': display_name,
+            'role': role,
+            'tenant': tenant,
+            'permissions': extra_permissions,
+            'tenant_permissions': tenant_permissions,
+            'groups': member_of,
+            'user_dn': user_dn,
+            'auth_source': 'ldap'
+        }
+        
+    except Exception as e:
+        logging.error(f"[LDAP] Authentication error: {e}")
+        return {'error': 'LDAP authentication failed'}  # MK: Don't leak internal error details
+
+
+def ldap_provision_user(ldap_result: dict) -> dict:
+    """Create or update a local user from LDAP authentication result
+    
+    LW: JIT (Just-In-Time) provisioning - user account is created on first login
+    MK: LDAP users have auth_source='ldap' and no local password
+    NS: Feb 2026 - Also syncs tenant, permissions, and tenant_permissions from group mappings
+    """
+    username = ldap_result['username'].lower()
+    users = load_users()
+    
+    if username in users:
+        # NS: SECURITY - Don't overwrite local-only accounts with LDAP
+        existing_source = users[username].get('auth_source', 'local')
+        if existing_source == 'local' and users[username].get('password_hash'):
+            logging.warning(f"[LDAP] Rejected provisioning for '{username}' - local account with password exists")
+            return None  # Caller should handle None return
+        
+        # Update existing LDAP/OIDC user with fresh LDAP info
+        user = users[username]
+        user['display_name'] = ldap_result.get('display_name', username)
+        user['email'] = ldap_result.get('email', user.get('email', ''))
+        user['role'] = ldap_result.get('role', user.get('role', ROLE_VIEWER))
+        user['auth_source'] = 'ldap'
+        user['ldap_dn'] = ldap_result.get('user_dn', '')
+        user['last_ldap_sync'] = datetime.now().isoformat()
+        
+        # MK: Sync tenant assignment from LDAP group mapping
+        if ldap_result.get('tenant'):
+            user['tenant_id'] = ldap_result['tenant']  # NS: Must be tenant_id (not tenant) for code compatibility
+        
+        # LW: Merge extra permissions from LDAP group mappings
+        if ldap_result.get('permissions'):
+            existing_perms = user.get('permissions', [])
+            merged = list(set(existing_perms + ldap_result['permissions']))
+            user['permissions'] = merged
+        
+        # NS: Sync tenant-specific roles/permissions
+        if ldap_result.get('tenant_permissions'):
+            if 'tenant_permissions' not in user:
+                user['tenant_permissions'] = {}
+            user['tenant_permissions'].update(ldap_result['tenant_permissions'])
+        
+        logging.info(f"[LDAP] Updated existing user '{username}' from LDAP (role={user['role']}, tenant={user.get('tenant')})")
+    else:
+        # Create new user
+        users[username] = {
+            'role': ldap_result.get('role', ROLE_VIEWER),
+            'enabled': True,
+            'display_name': ldap_result.get('display_name', username),
+            'email': ldap_result.get('email', ''),
+            'password_hash': '',  # NS: No local password for LDAP users
+            'password_salt': '',
+            'permissions': ldap_result.get('permissions', []),
+            'tenant_id': ldap_result.get('tenant', ''),  # NS: Must be tenant_id
+            'tenant_permissions': ldap_result.get('tenant_permissions', {}),
+            'theme': '',
+            'language': '',
+            'auth_source': 'ldap',
+            'ldap_dn': ldap_result.get('user_dn', ''),
+            'last_ldap_sync': datetime.now().isoformat(),
+            'created_at': datetime.now().isoformat()
+        }
+        logging.info(f"[LDAP] Provisioned new user '{username}' from LDAP (role={ldap_result.get('role', ROLE_VIEWER)}, tenant={ldap_result.get('tenant')})")
+    
+    save_users(users)
+    return users[username]
+
+
+# ============================================================================
+# NS: Feb 2026 - OIDC / Entra ID (Azure AD) Authentication
+# Supports Microsoft Entra ID via OAuth2 Authorization Code flow
+# Also works with any standard OIDC provider (Okta, Auth0, Keycloak, etc.)
+# ============================================================================
+
+def get_oidc_settings() -> dict:
+    """Load OIDC/Entra ID configuration from server settings
+    
+    LW: Supports Microsoft Entra ID, Okta, Auth0, Keycloak, and any OIDC-compliant provider
+    """
+    settings = load_server_settings()  # MK: Must use load_server_settings() NOT get_server_settings() (that's the route handler!)
+    provider = settings.get('oidc_provider', 'entra')
+    
+    # NS: Entra needs User.Read + GroupMember.Read.All for Graph API
+    # Default scopes differ by provider
+    if provider == 'entra':
+        default_scopes = 'openid profile email User.Read GroupMember.Read.All'
+    else:
+        default_scopes = 'openid profile email'
+    
+    return {
+        'enabled': settings.get('oidc_enabled', False),
+        'provider': provider,
+        'client_id': settings.get('oidc_client_id', ''),
+        'client_secret': get_db()._decrypt(settings.get('oidc_client_secret', '')),  # MK: Encrypted
+        'tenant_id': settings.get('oidc_tenant_id', ''),  # Entra-specific (Azure AD tenant)
+        'authority': settings.get('oidc_authority', ''),    # Custom OIDC issuer URL
+        'scopes': settings.get('oidc_scopes', '') or default_scopes,  # NS: Use provider-specific default if not configured
+        'redirect_uri': settings.get('oidc_redirect_uri', ''),
+        # Group → role mapping
+        'admin_group_id': settings.get('oidc_admin_group_id', ''),
+        'user_group_id': settings.get('oidc_user_group_id', ''),
+        'viewer_group_id': settings.get('oidc_viewer_group_id', ''),
+        'default_role': settings.get('oidc_default_role', ROLE_VIEWER),
+        'auto_create_users': settings.get('oidc_auto_create_users', True),
+        # Custom group mappings (same format as LDAP)
+        'group_mappings': settings.get('oidc_group_mappings', []),
+        # Display
+        'button_text': settings.get('oidc_button_text', 'Sign in with Microsoft'),
+    }
+
+
+_oidc_discovery_cache = {}  # authority_url -> {'data': {...}, 'expires': timestamp}
+
+def get_oidc_endpoints(config: dict) -> dict:
+    """Build OIDC endpoint URLs based on provider
+    
+    NS: Entra uses tenant-specific URLs, generic OIDC uses discovery
+    """
+    provider = config.get('provider', 'entra')
+    tenant_id = config.get('tenant_id', 'common')
+    
+    if provider == 'entra' and tenant_id:
+        # Microsoft Entra ID endpoints
+        base = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0"
+        return {
+            'authorization': f"{base}/authorize",
+            'token': f"{base}/token",
+            'jwks': f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys",
+            'userinfo': 'https://graph.microsoft.com/oidc/userinfo',
+            'graph_me': 'https://graph.microsoft.com/v1.0/me',
+            'graph_groups': 'https://graph.microsoft.com/v1.0/me/memberOf',
+        }
+    else:
+        # Generic OIDC provider - try .well-known discovery first, fall back to authority URL
+        authority = config.get('authority', '').rstrip('/')
+        
+        # NS: Feb 2026 - Try OpenID Connect Discovery (RFC 8414)
+        # This works for Keycloak, Okta, Auth0, Google, and any standard OIDC provider
+        # Cache discovery results for 1 hour to avoid network call on every request
+        discovery_url = f"{authority}/.well-known/openid-configuration"
+        cache_entry = _oidc_discovery_cache.get(authority)
+        if cache_entry and cache_entry.get('expires', 0) > time.time():
+            disco = cache_entry['data']
+            return {
+                'authorization': disco.get('authorization_endpoint', f"{authority}/authorize"),
+                'token': disco.get('token_endpoint', f"{authority}/token"),
+                'jwks': disco.get('jwks_uri', f"{authority}/.well-known/jwks.json"),
+                'userinfo': disco.get('userinfo_endpoint', f"{authority}/userinfo"),
+                'graph_me': '',
+                'graph_groups': '',
+            }
+        
+        try:
+            resp = requests.get(discovery_url, timeout=5)
+            if resp.status_code == 200:
+                disco = resp.json()
+                _oidc_discovery_cache[authority] = {'data': disco, 'expires': time.time() + 3600}
+                return {
+                    'authorization': disco.get('authorization_endpoint', f"{authority}/authorize"),
+                    'token': disco.get('token_endpoint', f"{authority}/token"),
+                    'jwks': disco.get('jwks_uri', f"{authority}/.well-known/jwks.json"),
+                    'userinfo': disco.get('userinfo_endpoint', f"{authority}/userinfo"),
+                    'graph_me': '',
+                    'graph_groups': '',
+                }
+        except Exception as e:
+            logging.debug(f"[OIDC] Discovery failed for {discovery_url}: {e}, using manual endpoints")
+        
+        # Fallback: construct from authority URL directly
+        return {
+            'authorization': f"{authority}/authorize",
+            'token': f"{authority}/token",
+            'jwks': f"{authority}/.well-known/jwks.json",
+            'userinfo': f"{authority}/userinfo",
+            'graph_me': '',
+            'graph_groups': '',
+        }
+
+
+def oidc_build_auth_url(config: dict, state: str) -> str:
+    """Build the OIDC authorization URL for redirect
+    
+    MK: state parameter prevents CSRF - stored in session before redirect
+    """
+    endpoints = get_oidc_endpoints(config)
+    
+    params = {
+        'client_id': config['client_id'],
+        'response_type': 'code',
+        'redirect_uri': config['redirect_uri'],
+        'scope': config['scopes'],
+        'state': state,
+        'response_mode': 'query',
+        'nonce': secrets.token_urlsafe(32),
+    }
+    
+    # Entra-specific: request group claims
+    if config.get('provider') == 'entra':
+        # Request groups in ID token (up to 200 groups)
+        params['scope'] = config['scopes']
+        if 'GroupMember.Read.All' not in params['scope']:
+            # We'll use graph API for groups instead
+            pass
+    
+    query = '&'.join(f"{k}={requests.utils.quote(str(v))}" for k, v in params.items())
+    return f"{endpoints['authorization']}?{query}"
+
+
+def oidc_exchange_code(config: dict, code: str) -> dict:
+    """Exchange authorization code for tokens
+    
+    LW: Returns access_token, id_token, and optionally refresh_token
+    """
+    endpoints = get_oidc_endpoints(config)
+    
+    data = {
+        'client_id': config['client_id'],
+        'client_secret': config['client_secret'],
+        'code': code,
+        'redirect_uri': config['redirect_uri'],
+        'grant_type': 'authorization_code',
+    }
+    
+    # NS: Entra needs scope in token request too
+    if config.get('provider') == 'entra':
+        data['scope'] = config['scopes']
+    
+    try:
+        resp = requests.post(endpoints['token'], data=data, timeout=15)
+        if resp.status_code != 200:
+            logging.error(f"[OIDC] Token exchange failed: {resp.status_code} {resp.text[:300]}")
+            return {'error': f'Token exchange failed: {resp.status_code}'}
+        
+        token_data = resp.json()
+        if 'error' in token_data:
+            logging.error(f"[OIDC] Token error: {token_data.get('error_description', token_data['error'])}")
+            return {'error': token_data.get('error_description', token_data['error'])}
+        
+        return token_data
+    except Exception as e:
+        logging.error(f"[OIDC] Token exchange exception: {e}")
+        return {'error': str(e)}
+
+
+def oidc_decode_id_token(id_token: str) -> dict:
+    """Decode JWT ID token without full verification
+    
+    MK: We trust the token because it came directly from the token endpoint over HTTPS.
+    For production with untrusted tokens, verify signature against JWKS.
+    """
+    try:
+        # JWT = header.payload.signature - we just need the payload
+        parts = id_token.split('.')
+        if len(parts) != 3:
+            return {'error': 'Invalid JWT format'}
+        
+        # Base64url decode payload (add padding)
+        payload = parts[1]
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += '=' * padding
+        
+        decoded = base64.urlsafe_b64decode(payload)
+        claims = json.loads(decoded)
+        return claims
+    except Exception as e:
+        logging.error(f"[OIDC] JWT decode error: {e}")
+        return {'error': str(e)}
+
+
+def oidc_get_user_info(config: dict, access_token: str) -> dict:
+    """Fetch user profile from OIDC provider
+    
+    NS: For Entra, uses Microsoft Graph API for richer data
+    """
+    headers = {'Authorization': f'Bearer {access_token}'}
+    endpoints = get_oidc_endpoints(config)
+    
+    user_info = {}
+    
+    try:
+        if config.get('provider') == 'entra' and endpoints.get('graph_me'):
+            # LW: Microsoft Graph gives us more data than OIDC userinfo
+            resp = requests.get(endpoints['graph_me'], headers=headers, timeout=10)
+            if resp.status_code == 200:
+                graph_data = resp.json()
+                user_info = {
+                    'sub': graph_data.get('id', ''),
+                    'preferred_username': graph_data.get('userPrincipalName', ''),
+                    'name': graph_data.get('displayName', ''),
+                    'email': graph_data.get('mail') or graph_data.get('userPrincipalName', ''),
+                    'given_name': graph_data.get('givenName', ''),
+                    'family_name': graph_data.get('surname', ''),
+                    'job_title': graph_data.get('jobTitle', ''),
+                }
+            else:
+                logging.warning(f"[OIDC] Graph /me failed ({resp.status_code}), falling back to userinfo")
+        
+        # Fallback or generic OIDC: use standard userinfo endpoint
+        if not user_info and endpoints.get('userinfo'):
+            resp = requests.get(endpoints['userinfo'], headers=headers, timeout=10)
+            if resp.status_code == 200:
+                user_info = resp.json()
+    except Exception as e:
+        logging.warning(f"[OIDC] User info fetch error: {e}")
+    
+    return user_info
+
+
+def oidc_get_user_groups(config: dict, access_token: str) -> list:
+    """Fetch user's group memberships from OIDC provider
+    
+    MK: For Entra, uses Graph API /me/memberOf
+    Returns list of group IDs (Entra) or group names (generic)
+    """
+    if config.get('provider') != 'entra':
+        # Generic OIDC: groups should be in ID token claims
+        return []
+    
+    endpoints = get_oidc_endpoints(config)
+    headers = {'Authorization': f'Bearer {access_token}'}
+    groups = []
+    
+    try:
+        # NS: Entra Graph API for group memberships
+        url = endpoints['graph_groups']
+        while url:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                logging.warning(f"[OIDC] Group fetch failed: {resp.status_code}")
+                break
+            
+            data = resp.json()
+            for member in data.get('value', []):
+                if member.get('@odata.type') == '#microsoft.graph.group':
+                    groups.append({
+                        'id': member.get('id', ''),
+                        'name': member.get('displayName', ''),
+                    })
+            
+            # LW: Handle pagination (Entra paginates at 100 groups)
+            url = data.get('@odata.nextLink')
+        
+        logging.info(f"[OIDC] Fetched {len(groups)} group memberships")
+    except Exception as e:
+        logging.warning(f"[OIDC] Group fetch error: {e}")
+    
+    return groups
+
+
+def oidc_map_groups_to_role(config: dict, groups: list, id_token_claims: dict = None) -> dict:
+    """Map OIDC groups to PegaProx role, tenant, and permissions
+    
+    LW: Works with Entra group IDs and generic OIDC group claims
+    Returns: {'role': str, 'tenant': str, 'permissions': [], 'tenant_permissions': {}}
+    """
+    result = {
+        'role': config.get('default_role', ROLE_VIEWER),
+        'tenant': '',
+        'permissions': [],
+        'tenant_permissions': {},
+    }
+    
+    # Build list of group identifiers (IDs for Entra, names for generic)
+    group_ids = set()
+    group_names = set()
+    for g in groups:
+        if isinstance(g, dict):
+            group_ids.add(g.get('id', '').lower())
+            group_names.add(g.get('name', '').lower())
+        elif isinstance(g, str):
+            group_ids.add(g.lower())
+            group_names.add(g.lower())
+    
+    # NS: Also check ID token 'groups' claim (Entra can embed group IDs in token)
+    if id_token_claims:
+        for gid in id_token_claims.get('groups', []):
+            group_ids.add(str(gid).lower())
+    
+    # MK: Built-in group mappings (admin > user > viewer priority)
+    admin_group = config.get('admin_group_id', '').strip().lower()
+    user_group = config.get('user_group_id', '').strip().lower()
+    viewer_group = config.get('viewer_group_id', '').strip().lower()
+    
+    if admin_group and (admin_group in group_ids or admin_group in group_names):
+        result['role'] = ROLE_ADMIN
+    elif user_group and (user_group in group_ids or user_group in group_names):
+        result['role'] = ROLE_USER
+    elif viewer_group and (viewer_group in group_ids or viewer_group in group_names):
+        result['role'] = ROLE_VIEWER
+    
+    # LW: Custom group mappings (override built-in)
+    for mapping in config.get('group_mappings', []):
+        map_group = (mapping.get('group_id') or mapping.get('group_dn') or '').strip().lower()
+        if map_group and (map_group in group_ids or map_group in group_names):
+            if mapping.get('role'):
+                result['role'] = mapping['role']
+            if mapping.get('tenant'):
+                result['tenant'] = mapping['tenant']
+            if mapping.get('permissions'):
+                result['permissions'].extend(mapping['permissions'])
+            if mapping.get('tenant') and mapping.get('tenant_role'):
+                result['tenant_permissions'][mapping['tenant']] = {
+                    'role': mapping['tenant_role'],
+                    'extra': mapping.get('permissions', [])  # MK: Must be 'extra' to match get_user_permissions()
+                }
+            logging.info(f"[OIDC] Custom group mapping matched: {map_group} → role={mapping.get('role')}")
+    
+    return result
+
+
+def oidc_provision_user(user_info: dict, role_mapping: dict, auth_source: str = 'oidc') -> dict:
+    """Create or update local user from OIDC authentication
+    
+    NS: JIT provisioning - same pattern as LDAP but for OIDC providers
+    MK: username derived from email or preferred_username
+    """
+    # Derive username from OIDC claims
+    email = user_info.get('email') or user_info.get('preferred_username', '')
+    raw_username = user_info.get('preferred_username') or email
+    
+    # LW: Sanitize username - use part before @ for email-style usernames
+    if '@' in raw_username:
+        username = raw_username.split('@')[0].lower()
+    else:
+        username = raw_username.lower()
+    
+    # NS: Ensure we have a valid username
+    username = ''.join(c for c in username if c.isalnum() or c in '._-')
+    if not username:
+        username = f"oidc_{user_info.get('sub', 'unknown')[:12]}"
+    
+    display_name = user_info.get('name') or user_info.get('given_name', '') 
+    if not display_name:
+        display_name = username
+    
+    users = load_users()
+    
+    if username in users:
+        # NS: SECURITY - Don't allow OIDC to overwrite a local-only user
+        # This prevents account takeover if someone creates an IdP account matching a local username
+        existing_source = users[username].get('auth_source', 'local')
+        if existing_source == 'local':
+            logging.warning(f"[OIDC] Rejected login for '{username}' - local account exists, cannot overwrite with OIDC")
+            return None  # Caller should handle None return
+        
+        # Update existing OIDC/LDAP user
+        user = users[username]
+        user['display_name'] = display_name
+        user['email'] = email
+        user['role'] = role_mapping.get('role', user.get('role', ROLE_VIEWER))
+        user['auth_source'] = auth_source
+        user['oidc_sub'] = user_info.get('sub', '')
+        user['last_oidc_sync'] = datetime.now().isoformat()
+        
+        # Sync tenant/permissions from group mappings
+        if role_mapping.get('tenant'):
+            user['tenant_id'] = role_mapping['tenant']  # NS: Must be tenant_id
+        if role_mapping.get('permissions'):
+            existing_perms = user.get('permissions', [])
+            user['permissions'] = list(set(existing_perms + role_mapping['permissions']))
+        if role_mapping.get('tenant_permissions'):
+            if 'tenant_permissions' not in user:
+                user['tenant_permissions'] = {}
+            user['tenant_permissions'].update(role_mapping['tenant_permissions'])
+        
+        logging.info(f"[OIDC] Updated user '{username}' (role={user['role']}, source={auth_source})")
+    else:
+        # Create new user
+        users[username] = {
+            'role': role_mapping.get('role', ROLE_VIEWER),
+            'enabled': True,
+            'display_name': display_name,
+            'email': email,
+            'password_hash': '',  # No local password for OIDC users
+            'password_salt': '',
+            'permissions': role_mapping.get('permissions', []),
+            'tenant_id': role_mapping.get('tenant', ''),  # NS: Must be tenant_id
+            'tenant_permissions': role_mapping.get('tenant_permissions', {}),
+            'theme': '',
+            'language': '',
+            'auth_source': auth_source,
+            'oidc_sub': user_info.get('sub', ''),
+            'last_oidc_sync': datetime.now().isoformat(),
+            'created_at': datetime.now().isoformat()
+        }
+        logging.info(f"[OIDC] Provisioned new user '{username}' (role={role_mapping.get('role', ROLE_VIEWER)}, source={auth_source})")
+    
+    save_users(users)
+    return {**users[username], 'username': username}
+
+
+# ---- OIDC Routes ----
+
+@app.route('/api/auth/oidc/authorize', methods=['GET'])
+def oidc_authorize():
+    """Initiate OIDC login flow - redirects user to identity provider
+    
+    NS: Generates CSRF state, stores in session, redirects to IdP
+    """
+    config = get_oidc_settings()
+    if not config['enabled'] or not config['client_id']:
+        return jsonify({'error': 'OIDC authentication is not configured'}), 400
+    
+    # NS: Auto-detect redirect URI if not configured
+    if not config.get('redirect_uri'):
+        # Build from request origin
+        origin = request.headers.get('Origin') or request.host_url.rstrip('/')
+        config['redirect_uri'] = f"{origin}/oidc/callback"
+        logging.info(f"[OIDC] Auto-detected redirect_uri: {config['redirect_uri']}")
+    
+    # MK: Generate state for CSRF protection
+    state = secrets.token_urlsafe(32)
+    
+    # Store state in a temporary way (cookie-based since no session yet)
+    auth_url = oidc_build_auth_url(config, state)
+    
+    response = make_response(jsonify({'auth_url': auth_url}))  # NS: Don't return state in body - it's in the cookie
+    # LW: Store state in secure cookie for callback verification
+    is_secure = request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https'
+    response.set_cookie('oidc_state', state, httponly=True, secure=is_secure, samesite='Lax', max_age=600)
+    return response
+
+
+@app.route('/api/auth/oidc/callback', methods=['POST'])
+def oidc_callback():
+    """Handle OIDC callback - exchange code for tokens and create session
+    
+    LW: Called by frontend after redirect back from IdP
+    Frontend sends: {code, state} from URL query params
+    """
+    # NS: SECURITY - Basic rate limiting on callback (prevent brute-force code replay)
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if client_ip:
+        client_ip = client_ip.split(',')[0].strip()
+    oidc_cb_key = f'oidc_cb_{client_ip}'
+    if oidc_cb_key in login_attempts_by_ip:
+        attempts = login_attempts_by_ip[oidc_cb_key].get('attempts', [])
+        recent = [t for t in attempts if time.time() - t < 60]
+        if len(recent) >= 10:
+            logging.warning(f"[OIDC] Rate limit hit for callback from {client_ip}")
+            return jsonify({'error': 'Too many attempts. Try again later.'}), 429
+        login_attempts_by_ip[oidc_cb_key] = {'attempts': recent + [time.time()]}
+    else:
+        login_attempts_by_ip[oidc_cb_key] = {'attempts': [time.time()]}
+    
+    config = get_oidc_settings()
+    if not config['enabled']:
+        return jsonify({'error': 'OIDC authentication is not configured'}), 400
+    
+    # NS: Auto-detect redirect URI if not configured (must match what was sent in authorize!)
+    if not config.get('redirect_uri'):
+        origin = request.headers.get('Origin') or request.host_url.rstrip('/')
+        config['redirect_uri'] = f"{origin}/oidc/callback"
+    
+    data = request.get_json() or {}
+    code = data.get('code', '')
+    state = data.get('state', '')
+    
+    if not code:
+        return jsonify({'error': 'Authorization code is required'}), 400
+    
+    # NS: Verify CSRF state
+    stored_state = request.cookies.get('oidc_state', '')
+    if not stored_state or stored_state != state:
+        logging.warning(f"[OIDC] State mismatch - possible CSRF attack")
+        return jsonify({'error': 'Invalid state parameter (CSRF protection)'}), 400
+    
+    # Step 1: Exchange code for tokens
+    token_data = oidc_exchange_code(config, code)
+    if 'error' in token_data:
+        return jsonify({'error': token_data['error']}), 401
+    
+    access_token = token_data.get('access_token', '')
+    id_token_raw = token_data.get('id_token', '')
+    
+    if not access_token:
+        return jsonify({'error': 'No access token received'}), 401
+    
+    # Step 2: Decode ID token for claims
+    id_claims = {}
+    if id_token_raw:
+        id_claims = oidc_decode_id_token(id_token_raw)
+        if 'error' in id_claims:
+            logging.warning(f"[OIDC] ID token decode warning: {id_claims['error']}")
+            id_claims = {}
+    
+    # Step 3: Get user info from provider
+    user_info = oidc_get_user_info(config, access_token)
+    if not user_info:
+        # MK: Fallback to ID token claims
+        user_info = id_claims
+    
+    if not user_info or not (user_info.get('preferred_username') or user_info.get('email') or user_info.get('sub')):
+        return jsonify({'error': 'Could not retrieve user information from provider'}), 401
+    
+    # Step 4: Get group memberships for role mapping
+    groups = oidc_get_user_groups(config, access_token)
+    role_mapping = oidc_map_groups_to_role(config, groups, id_claims)
+    
+    # Step 5: Provision/update local user
+    if not config['auto_create_users']:
+        # Check if user already exists
+        # MK: this has to match the logic in oidc_provision_user or we get mismatches
+        # (had a bug where "john.doe" here vs "johndoe" in provision caused 403s)
+        email = user_info.get('email') or user_info.get('preferred_username', '')
+        raw_username = user_info.get('preferred_username') or email
+        check_username = raw_username.split('@')[0].lower() if '@' in raw_username else raw_username.lower()
+        check_username = ''.join(c for c in check_username if c.isalnum() or c in '._-')
+        if not check_username:
+            check_username = f"oidc_{user_info.get('sub', 'unknown')[:12]}"
+        users = load_users()
+        if check_username not in users:
+            return jsonify({'error': 'User account does not exist. Contact an administrator.'}), 403
+    
+    # Determine auth_source label
+    provider = config.get('provider', 'oidc')
+    auth_source = 'entra' if provider == 'entra' else 'oidc'
+    
+    user = oidc_provision_user(user_info, role_mapping, auth_source=auth_source)
+    
+    # NS: SECURITY - oidc_provision_user returns None if local account would be overwritten
+    if not user:
+        return jsonify({'error': 'A local account with this username already exists. Contact an administrator.'}), 403
+    
+    username = user.get('username', '')
+    
+    # Check if user is enabled
+    users = load_users()
+    if username in users and not users[username].get('enabled', True):
+        return jsonify({'error': 'Account is disabled'}), 403
+    
+    # Step 6: Create session via create_session() for proper session rotation + limits
+    # MK: create_session() handles max 3 sessions per user, session rotation, save_sessions()
+    session_token = create_session(username, user.get('role', ROLE_VIEWER))
+    
+    log_audit(username, 'auth.oidc.login', f"OIDC login via {provider} from {request.remote_addr}")
+    
+    response = make_response(jsonify({
+        'success': True,
+        'user': username,
+        'role': user.get('role', ROLE_VIEWER),
+        'display_name': user.get('display_name', username),
+        'auth_source': auth_source,
+        'session_id': session_token,
+    }))
+    
+    # Set session cookie (same pattern as regular login)
+    is_secure = request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https'
+    response.set_cookie(
+        'session_id',
+        session_token,
+        httponly=True,
+        samesite='Strict',
+        secure=is_secure,
+        max_age=get_session_timeout()
+    )
+    # Clear OIDC state cookie
+    response.delete_cookie('oidc_state')
+    
+    return response
+
+
+@app.route('/api/auth/oidc/config', methods=['GET'])
+def oidc_get_public_config():
+    """Return public OIDC config (non-sensitive) for login page
+    
+    NS: Frontend needs to know if OIDC is enabled and button text
+    No auth required - this is used on the login page
+    """
+    config = get_oidc_settings()
+    return jsonify({
+        'enabled': config['enabled'],
+        'provider': config.get('provider', 'entra'),
+        'button_text': config.get('button_text', 'Sign in with Microsoft'),
+    })
+
+
+@app.route('/api/settings/oidc/test', methods=['POST'])
+@require_auth(roles=[ROLE_ADMIN])
+def oidc_test_connection():
+    """Test OIDC configuration by verifying endpoints are reachable
+    
+    MK: Tests connectivity to OIDC discovery and token endpoints
+    """
+    data = request.get_json() or {}
+    config = get_oidc_settings()
+    
+    # Override with test data
+    for key in ['oidc_client_id', 'oidc_tenant_id', 'oidc_provider', 'oidc_authority']:
+        if key in data:
+            short_key = key.replace('oidc_', '')
+            config[short_key] = data[key]
+    
+    results = []
+    
+    # Step 1: Check endpoints exist
+    endpoints = get_oidc_endpoints(config)
+    results.append({'step': 'Configuration', 'status': 'ok', 'detail': f"Provider: {config['provider']}, Tenant: {config.get('tenant_id', 'N/A')}"})
+    
+    # Step 2: Test authorization endpoint
+    try:
+        resp = requests.get(endpoints['authorization'], allow_redirects=False, timeout=10)
+        # Auth endpoint should return 200 or redirect
+        if resp.status_code in [200, 302, 400]:
+            results.append({'step': 'Authorization Endpoint', 'status': 'ok', 'detail': endpoints['authorization']})
+        else:
+            results.append({'step': 'Authorization Endpoint', 'status': 'error', 'detail': f"HTTP {resp.status_code}"})
+    except Exception as e:
+        results.append({'step': 'Authorization Endpoint', 'status': 'error', 'detail': str(e)})
+    
+    # Step 3: Test JWKS endpoint
+    try:
+        resp = requests.get(endpoints['jwks'], timeout=10)
+        if resp.status_code == 200:
+            keys = resp.json().get('keys', [])
+            results.append({'step': 'JWKS Endpoint', 'status': 'ok', 'detail': f"Found {len(keys)} signing keys"})
+        else:
+            results.append({'step': 'JWKS Endpoint', 'status': 'error', 'detail': f"HTTP {resp.status_code}"})
+    except Exception as e:
+        results.append({'step': 'JWKS Endpoint', 'status': 'error', 'detail': str(e)})
+    
+    # Step 4: Check client_id is set
+    if config['client_id']:
+        results.append({'step': 'Client ID', 'status': 'ok', 'detail': f"{config['client_id'][:8]}..."})
+    else:
+        results.append({'step': 'Client ID', 'status': 'warning', 'detail': 'Not configured'})
+    
+    # Step 5: Check redirect URI
+    if config.get('redirect_uri'):
+        results.append({'step': 'Redirect URI', 'status': 'ok', 'detail': config['redirect_uri']})
+    else:
+        results.append({'step': 'Redirect URI', 'status': 'warning', 'detail': 'Not configured - will auto-detect'})
+    
+    all_ok = all(r['status'] == 'ok' for r in results)
+    return jsonify({'success': all_ok, 'results': results})
+
+
 @app.route('/api/auth/login', methods=['POST'])
 def auth_login():
     """login endpoint - MK"""
@@ -15090,36 +16335,97 @@ def auth_login():
     # NS: had a bug where user changes werent reflected until restart
     users_db = load_users()
     
-    # check user exists
-    if username not in users_db:
-        logging.warning(f"Login attempt for unknown user: {username} from {client_ip}")
-        locked = record_failed_attempt()  # Don't track by username for unknown users
-        if locked:
-            return jsonify({
-                'error': f'Too many failed attempts. Try again in {lockout_time} seconds.',
-                'locked': True,
-                'retry_after': lockout_time
-            }), 429
-        return jsonify({'error': 'Invalid credentials'}), 401
+    # =================================================================
+    # MK: Feb 2026 - LDAP Authentication (tried before local auth)
+    # Flow: LDAP enabled? → Try LDAP bind → JIT provision → session
+    # If LDAP fails or disabled → fall through to local password auth
+    # =================================================================
+    ldap_config = get_ldap_settings()
+    ldap_authenticated = False
     
-    user = users_db[username]
+    if ldap_config['enabled']:
+        ldap_result = ldap_authenticate(username, password)
+        
+        if ldap_result.get('success'):
+            # LW: LDAP auth succeeded - provision/update local user
+            if ldap_config['auto_create_users'] or username in users_db:
+                user = ldap_provision_user(ldap_result)
+                if user is None:
+                    # NS: Local account exists - fall through to local auth
+                    logging.info(f"[LDAP] User '{username}' has local account, skipping LDAP provisioning")
+                else:
+                    users_db = load_users()  # Reload after provisioning
+                    ldap_authenticated = True
+                    logging.info(f"[LDAP] User '{username}' authenticated via LDAP from {client_ip}")
+            else:
+                logging.warning(f"[LDAP] User '{username}' found in LDAP but auto-create is disabled")
+                return jsonify({'error': 'User not authorized in PegaProx. Contact admin.'}), 401
+        elif ldap_result.get('error') == 'User not found in LDAP':
+            # NS: User not in LDAP - fall through to local auth
+            logging.debug(f"[LDAP] User '{username}' not in LDAP, trying local auth")
+        elif 'Invalid LDAP credentials' in ldap_result.get('error', ''):
+            # User found in LDAP but wrong password - check if also local user
+            if username in users_db and users_db[username].get('auth_source') == 'ldap':
+                # Pure LDAP user - don't fall through to local auth
+                logging.warning(f"[LDAP] Failed login for LDAP user '{username}' from {client_ip}")
+                locked = record_failed_attempt(username)
+                if locked:
+                    return jsonify({
+                        'error': f'Too many failed attempts. Try again in {lockout_time} seconds.',
+                        'locked': True, 'retry_after': lockout_time
+                    }), 429
+                return jsonify({'error': 'Invalid credentials'}), 401
+            # Else: user exists locally too, fall through to local auth
+        else:
+            # LDAP server error - log but fall through to local auth
+            logging.warning(f"[LDAP] Server error during auth: {ldap_result.get('error')}")
     
-    # check user is enabled
-    if not user.get('enabled', True):
-        logging.warning(f"Login attempt for disabled user: {username} from {client_ip}")
-        return jsonify({'error': 'Account is disabled'}), 401
-    
-    # Verify password
-    if not verify_password(password, user['password_salt'], user['password_hash']):
-        logging.warning(f"Failed login attempt for user: {username} from {client_ip}")
-        locked = record_failed_attempt(username)
-        if locked:
-            return jsonify({
-                'error': f'Too many failed attempts. Try again in {lockout_time} seconds.',
-                'locked': True,
-                'retry_after': lockout_time
-            }), 429
-        return jsonify({'error': 'Invalid credentials'}), 401
+    # =================================================================
+    # Local Authentication (skipped if LDAP already authenticated)
+    # =================================================================
+    if not ldap_authenticated:
+        # check user exists
+        if username not in users_db:
+            logging.warning(f"Login attempt for unknown user: {username} from {client_ip}")
+            locked = record_failed_attempt()  # Don't track by username for unknown users
+            if locked:
+                return jsonify({
+                    'error': f'Too many failed attempts. Try again in {lockout_time} seconds.',
+                    'locked': True,
+                    'retry_after': lockout_time
+                }), 429
+            return jsonify({'error': 'Invalid credentials'}), 401
+        
+        user = users_db[username]
+        
+        # check user is enabled
+        if not user.get('enabled', True):
+            logging.warning(f"Login attempt for disabled user: {username} from {client_ip}")
+            return jsonify({'error': 'Account is disabled'}), 401
+        
+        # NS: LDAP-only users cannot login with local password
+        if user.get('auth_source') == 'ldap' and not user.get('password_hash'):
+            logging.warning(f"LDAP user '{username}' tried local login but has no local password")
+            return jsonify({'error': 'Please use LDAP credentials to sign in'}), 401
+        
+        # Verify password
+        if not verify_password(password, user['password_salt'], user['password_hash']):
+            logging.warning(f"Failed login attempt for user: {username} from {client_ip}")
+            locked = record_failed_attempt(username)
+            if locked:
+                return jsonify({
+                    'error': f'Too many failed attempts. Try again in {lockout_time} seconds.',
+                    'locked': True,
+                    'retry_after': lockout_time
+                }), 429
+            return jsonify({'error': 'Invalid credentials'}), 401
+    else:
+        user = users_db[username]
+        
+        # check user is enabled (even LDAP users can be disabled locally)
+        if not user.get('enabled', True):
+            logging.warning(f"LDAP user '{username}' is disabled locally")
+            return jsonify({'error': 'Account is disabled'}), 401
     
     # check 2FA is required
     if user.get('totp_enabled') and user.get('totp_secret'):
@@ -15153,7 +16459,8 @@ def auth_login():
         del login_attempts_by_user[username]
     
     # NS: Auto-migrate password to Argon2id if using old PBKDF2 format - Jan 2026
-    if needs_password_rehash(user.get('password_salt', ''), user.get('password_hash', '')):
+    # Only rehash for locally-authenticated users - LDAP passwords must NEVER be stored locally
+    if not ldap_authenticated and needs_password_rehash(user.get('password_salt', ''), user.get('password_hash', '')):
         try:
             new_salt, new_hash = hash_password(password)
             user['password_salt'] = new_salt
@@ -15183,6 +16490,16 @@ def auth_login():
     settings = load_server_settings()
     default_theme = settings.get('default_theme', 'proxmoxDark')
     
+    # NS: Feb 2026 - Check if user needs to set up 2FA (force_2fa setting)
+    requires_2fa_setup = False
+    if settings.get('force_2fa') and TOTP_AVAILABLE:
+        has_2fa = user.get('totp_enabled', False)
+        is_external = user.get('auth_source', 'local') in ('oidc', 'entra')
+        is_admin = user.get('role') == ROLE_ADMIN
+        exclude_admins = settings.get('force_2fa_exclude_admins', False)
+        if not has_2fa and not is_external and not (is_admin and exclude_admins):
+            requires_2fa_setup = True
+    
     # NS: Debug log for theme sync issues
     user_theme = user.get('theme', '') or default_theme
     logging.info(f"[LOGIN] User {username} theme from DB: '{user.get('theme', '')}', using: '{user_theme}'")
@@ -15194,6 +16511,9 @@ def auth_login():
             'role': user['role'],
             'display_name': user.get('display_name', username),
             'email': user.get('email', ''),
+            'auth_source': user.get('auth_source', 'local'),  # NS: For LDAP/Entra/OIDC badge
+            'permissions': get_user_permissions(user),  # LW: Frontend can hide/show buttons
+            'tenant_id': user.get('tenant_id', DEFAULT_TENANT_ID),
             'totp_enabled': user.get('totp_enabled', False),
             'theme': user_theme,  # NS: Use default if empty
             'language': user.get('language', ''),
@@ -15202,6 +16522,7 @@ def auth_login():
         },
         'session_id': session_id,
         'default_theme': default_theme,  # NS: Include for frontend fallback
+        'requires_2fa_setup': requires_2fa_setup,  # NS: Feb 2026 - Force 2FA
         # NS: Security warning if using default password
         'security_warning': 'DEFAULT_PASSWORD' if (user['role'] == ROLE_ADMIN and password == 'admin') else None
     })
@@ -15243,11 +16564,22 @@ def auth_check():
     
     session = validate_session(session_id)
     if not session:
-        return jsonify({'authenticated': False}), 401
+        # NS: Feb 2026 - Include LDAP/OIDC status so login page can show indicators
+        settings = load_server_settings()
+        ldap_enabled = settings.get('ldap_enabled', False)
+        oidc_enabled = settings.get('oidc_enabled', False)
+        oidc_button_text = settings.get('oidc_button_text', 'Sign in with Microsoft')
+        return jsonify({'authenticated': False, 'ldap_enabled': ldap_enabled, 'oidc_enabled': oidc_enabled, 'oidc_button_text': oidc_button_text}), 401
     
     # Get user info - always fresh from database
     users_db = load_users()
     user = users_db.get(session['user'], {})
+    
+    # NS: Feb 2026 - If user was disabled while session is active, force logout
+    if not user or not user.get('enabled', True):
+        logging.info(f"[AUTH_CHECK] User '{session['user']}' is disabled or deleted, invalidating session")
+        invalidate_session(session_id)
+        return jsonify({'authenticated': False, 'reason': 'account_disabled'}), 401
     
     logging.debug(f"auth_check for {session['user']}: ui_layout = {user.get('ui_layout')}")
     
@@ -15257,9 +16589,11 @@ def auth_check():
     
     # Check if user should be subject to password expiry
     # MK: admins are exempt by default, but can opt-in via settings
+    # NS: LDAP/OIDC users are ALWAYS exempt - they don't have local passwords
     is_admin = session['role'] == ROLE_ADMIN
+    is_external_auth = user.get('auth_source', 'local') in ('ldap', 'oidc', 'entra')
     include_admins = settings.get('password_expiry_include_admins', False)
-    should_check_expiry = settings.get('password_expiry_enabled') and (not is_admin or include_admins)
+    should_check_expiry = settings.get('password_expiry_enabled') and not is_external_auth and (not is_admin or include_admins)
     
     if should_check_expiry:
         expiry_days = settings.get('password_expiry_days', 90)
@@ -15301,20 +16635,48 @@ def auth_check():
     user_theme = user.get('theme', '') or default_theme
     logging.debug(f"[AUTH_CHECK] User {session['user']} theme from DB: '{user.get('theme', '')}', using: '{user_theme}'")
     
+    # NS: always check DB for latest role, session might be stale if admin changed it
+    # This ensures role changes by admin take effect immediately
+    fresh_role = user.get('role', session['role'])
+    if fresh_role != session['role']:
+        # MK: Update session to match DB (avoids stale role in session)
+        old_role = session['role']
+        session['role'] = fresh_role
+        logging.info(f"[AUTH_CHECK] Updated stale session role for {session['user']}: {old_role} → {fresh_role}")
+    
+    # NS: Get effective permissions for UI visibility
+    user_permissions = get_user_permissions(user)
+    
+    # NS: Feb 2026 - Check if user needs to set up 2FA (force_2fa setting)
+    requires_2fa_setup = False
+    if settings.get('force_2fa') and TOTP_AVAILABLE:
+        has_2fa = user.get('totp_enabled', False)
+        is_external = user.get('auth_source', 'local') in ('oidc', 'entra')
+        is_admin = fresh_role == ROLE_ADMIN
+        exclude_admins = settings.get('force_2fa_exclude_admins', False)
+        # skip OIDC/Entra users (they use their IdP's MFA) and optionally admins
+        if not has_2fa and not is_external and not (is_admin and exclude_admins):
+            requires_2fa_setup = True
+    
     return jsonify({
         'authenticated': True,
         'session_id': session_id,  # MK: Return session_id for WebSocket auth
         'user': {
             'username': session['user'],
-            'role': session['role'],
+            'role': fresh_role,
             'display_name': user.get('display_name', session['user']),
             'email': user.get('email', ''),
+            'auth_source': user.get('auth_source', 'local'),  # NS: For LDAP/Entra/OIDC badge
+            'tenant_id': user.get('tenant_id', DEFAULT_TENANT_ID),  # MK: For multi-tenant UI
+            'permissions': user_permissions,  # LW: So frontend knows what buttons to show
             'theme': user_theme,
             'language': user.get('language', ''),
             'ui_layout': user.get('ui_layout', 'modern'),
-            'taskbar_auto_expand': user.get('taskbar_auto_expand', True)  # NS: Feb 2026
+            'taskbar_auto_expand': user.get('taskbar_auto_expand', True),  # NS: Feb 2026
+            'totp_enabled': user.get('totp_enabled', False)
         },
         'password_expiry': password_expiry,
+        'requires_2fa_setup': requires_2fa_setup,
         'default_theme': default_theme
     })
 
@@ -15482,12 +16844,22 @@ def auth_change_password():
         return jsonify({'error': error_msg}), 400
     
     username = request.session['user']
+    
+    # NS: rate limit this - someone with a stolen session could brute-force the current password
+    if not check_auth_action_rate_limit(f'pwd_change:{username}', max_attempts=5, window=300):
+        return jsonify({'error': 'Too many password change attempts. Try again in 5 minutes.'}), 429
+    
     users_db = load_users()
     
     if username not in users_db:
         return jsonify({'error': 'User not found'}), 404
     
     user = users_db[username]
+    
+    # NS: LDAP/OIDC users cannot change their password here - they must change it in their identity provider
+    if user.get('auth_source', 'local') in ('ldap', 'oidc', 'entra'):
+        provider_name = {'ldap': 'LDAP/Active Directory', 'oidc': 'your OIDC provider', 'entra': 'Microsoft Entra ID'}.get(user['auth_source'], 'your identity provider')
+        return jsonify({'error': f'Password is managed by {provider_name}. Please change it there.'}), 400
     
     # Verify current password
     if not verify_password(current_password, user['password_salt'], user['password_hash']):
@@ -15540,6 +16912,12 @@ def setup_2fa():
     
     user = users_db[username]
     
+    # NS: OIDC/Entra users should use their IdP's MFA, not PegaProx 2FA
+    # PegaProx 2FA only works for login form (LDAP + local), not OIDC redirect flow
+    if user.get('auth_source', 'local') in ('oidc', 'entra'):
+        provider_name = 'Microsoft Entra ID' if user.get('auth_source') == 'entra' else 'your OIDC provider'
+        return jsonify({'error': f'2FA is managed by {provider_name}. Please enable MFA there instead.'}), 400
+    
     # Generate new secret
     secret = pyotp.random_base32()
     
@@ -15586,6 +16964,11 @@ def verify_2fa_setup():
         return jsonify({'error': 'TOTP code required'}), 400
     
     username = request.session['user']
+    
+    # NS: only 1M possible 6-digit codes, easy to brute force without this
+    if not check_auth_action_rate_limit(f'totp_verify:{username}', max_attempts=5, window=300):
+        return jsonify({'error': 'Too many verification attempts. Try again in 5 minutes.'}), 429
+    
     logging.info(f"2FA verify requested for user: {username}, code length: {len(code)}")  # MK: Debug
     users_db = load_users()
     
@@ -15630,6 +17013,11 @@ def disable_2fa():
         return jsonify({'error': 'Password required to disable 2FA'}), 400
     
     username = request.session['user']
+    
+    # NS: same issue as pwd change - stolen session + unlimited guesses = bad
+    if not check_auth_action_rate_limit(f'2fa_disable:{username}', max_attempts=5, window=300):
+        return jsonify({'error': 'Too many attempts. Try again in 5 minutes.'}), 429
+    
     users_db = load_users()
     
     if username not in users_db:
@@ -15637,9 +17025,19 @@ def disable_2fa():
     
     user = users_db[username]
     
-    # Verify password
-    if not verify_password(password, user['password_salt'], user['password_hash']):
-        return jsonify({'error': 'Invalid password'}), 401
+    # NS: OIDC/Entra users manage MFA through their IdP - shouldn't have PegaProx 2FA
+    if user.get('auth_source', 'local') in ('oidc', 'entra'):
+        return jsonify({'error': '2FA is managed by your identity provider'}), 400
+    
+    # NS: Feb 2026 - LDAP users verify against LDAP (they have no local password hash)
+    if user.get('auth_source') == 'ldap':
+        ldap_result = ldap_authenticate(username, password)
+        if not ldap_result.get('success'):
+            return jsonify({'error': 'Invalid LDAP password'}), 401
+    else:
+        # Local users verify against local password hash
+        if not verify_password(password, user['password_salt'], user['password_hash']):
+            return jsonify({'error': 'Invalid password'}), 401
     
     # Disable 2FA
     user['totp_enabled'] = False
@@ -15935,6 +17333,12 @@ def admin_change_password(username):
         return jsonify({'error': error_msg}), 400
     
     user = users_db[username]
+    
+    # NS: Block password reset for LDAP/OIDC users - their password is managed externally
+    if user.get('auth_source', 'local') in ('ldap', 'oidc', 'entra'):
+        provider_name = {'ldap': 'LDAP/Active Directory', 'oidc': 'OIDC provider', 'entra': 'Microsoft Entra ID'}.get(user['auth_source'], 'identity provider')
+        return jsonify({'error': f"This user authenticates via {provider_name}. Password must be changed there, or switch auth source to 'local' first."}), 400
+    
     salt, password_hash = hash_password(new_password)
     user['password_salt'] = salt
     user['password_hash'] = password_hash
@@ -16039,19 +17443,37 @@ def global_search():
     """Search across all clusters for VMs, containers, and nodes
     
     Query params:
-    - q: Search query (name, vmid, ip, node name)
-    - type: Filter by type (vm, ct, node, all) - default: all
+    - q: search query (name, vmid, ip, node name, tags)
+    - type: filter by type (vm, ct, node, all) - default: all
     
-    Returns matches from all accessible clusters
+    Also supports prefix filters like tag:web, node:pve1, ip:192.168, status:running
+    You can combine tags with comma: tag:web,production (AND logic)
     
     LW: This is one of the most used features - people love being able
     to find a VM without knowing which cluster its on.
+    NS: added tag search in Feb 2026, users kept asking for it
+    MK: Claude + ChatGPT helped optimize the search logic and prefix filters
     """
-    query = request.args.get('q', '').lower().strip()
+    raw_query = request.args.get('q', '').strip()
     search_type = request.args.get('type', 'all').lower()
     
-    if not query or len(query) < 2:
+    if not raw_query or len(raw_query) < 2:
         return jsonify({'error': 'Search query must be at least 2 characters'}), 400
+    
+    # MK: prefix filters - type tag:xxx to search only tags, node:xxx for nodes etc
+    prefix_filter = None
+    query = raw_query.lower()
+    for prefix in ['tag:', 'node:', 'ip:', 'status:']:
+        if query.startswith(prefix):
+            prefix_filter = prefix[:-1]  # 'tag', 'node', 'ip', 'status'
+            query = query[len(prefix):].strip()
+            break
+    
+    if not query:
+        return jsonify({'error': 'Search query is empty after prefix'}), 400
+    
+    # LW: you can do tag:web,production to filter by multiple tags at once
+    tag_queries = [t.strip() for t in query.split(',')] if prefix_filter == 'tag' else [query]
     
     results = []
     user = request.session.get('user', '')
@@ -16062,6 +17484,9 @@ def global_search():
     
     # Get user's accessible clusters (respect RBAC)
     user_clusters = user_data.get('clusters', [])
+    
+    # MK: collect tags for the autocomplete dropdown in the frontend
+    all_tags = set()
     
     for cluster_id, mgr in cluster_managers.items():
         # Check cluster access - NS: important for multi-tenant setups
@@ -16082,38 +17507,78 @@ def global_search():
                     vmid = str(r.get('vmid', ''))
                     node = (r.get('node') or '').lower()
                     ip = (r.get('ip') or '').lower()
+                    tags_str = (r.get('tags') or '').lower()
+                    tags_list = [t.strip() for t in tags_str.split(';') if t.strip()] if tags_str else []
+                    status = (r.get('status') or '').lower()
                     
-                    # Match against query
-                    if (query in name or 
-                        query in vmid or 
-                        query in node or
-                        query in ip):
-                        
-                        # Type filter
-                        vm_type = r.get('type', 'qemu')
-                        if search_type == 'vm' and vm_type != 'qemu':
-                            continue
-                        if search_type == 'ct' and vm_type != 'lxc':
-                            continue
-                        
-                        results.append({
-                            'type': 'vm' if vm_type == 'qemu' else 'ct',
-                            'cluster_id': cluster_id,
-                            'cluster_name': cluster_name,
-                            'vmid': r.get('vmid'),
-                            'name': r.get('name'),
-                            'node': r.get('node'),
-                            'status': r.get('status'),
-                            'ip': r.get('ip'),
-                            'cpu': r.get('cpu'),
-                            'mem': r.get('mem'),
-                            'maxmem': r.get('maxmem'),
-                        })
+                    # collect tags for autocomplete
+                    for t in tags_list:
+                        all_tags.add(t)
+                    
+                    # Match based on prefix filter or global search
+                    matched = False
+                    match_field = None
+                    
+                    if prefix_filter == 'tag':
+                        # All tag queries must match (AND logic for multi-tag)
+                        matched = all(any(tq in tag for tag in tags_list) for tq in tag_queries)
+                        if matched:
+                            match_field = 'tag'
+                    elif prefix_filter == 'node':
+                        matched = query in node
+                        if matched:
+                            match_field = 'node'
+                    elif prefix_filter == 'ip':
+                        matched = query in ip
+                        if matched:
+                            match_field = 'ip'
+                    elif prefix_filter == 'status':
+                        matched = status.startswith(query)
+                        if matched:
+                            match_field = 'status'
+                    else:
+                        # Global search: match name, vmid, node, ip, AND tags
+                        if query in name:
+                            matched, match_field = True, 'name'
+                        elif query == vmid or query in vmid:
+                            matched, match_field = True, 'vmid'
+                        elif query in node:
+                            matched, match_field = True, 'node'
+                        elif query in ip:
+                            matched, match_field = True, 'ip'
+                        elif any(query in tag for tag in tags_list):
+                            matched, match_field = True, 'tag'
+                    
+                    if not matched:
+                        continue
+                    
+                    # Type filter
+                    vm_type = r.get('type', 'qemu')
+                    if search_type == 'vm' and vm_type != 'qemu':
+                        continue
+                    if search_type == 'ct' and vm_type != 'lxc':
+                        continue
+                    
+                    results.append({
+                        'type': 'vm' if vm_type == 'qemu' else 'ct',
+                        'cluster_id': cluster_id,
+                        'cluster_name': cluster_name,
+                        'vmid': r.get('vmid'),
+                        'name': r.get('name'),
+                        'node': r.get('node'),
+                        'status': r.get('status'),
+                        'ip': r.get('ip'),
+                        'tags': r.get('tags', ''),
+                        'cpu': r.get('cpu'),
+                        'mem': r.get('mem'),
+                        'maxmem': r.get('maxmem'),
+                        'match_field': match_field,
+                    })
             except Exception as e:
                 logging.debug(f"Error searching cluster {cluster_id}: {e}")
         
         # Search Nodes
-        if search_type in ['all', 'node']:
+        if search_type in ['all', 'node'] and prefix_filter in [None, 'node']:
             try:
                 for node_name, node_data in (mgr.nodes or {}).items():
                     if query in node_name.lower():
@@ -16126,6 +17591,7 @@ def global_search():
                             'cpu': node_data.get('cpu'),
                             'mem': node_data.get('mem'),
                             'maxmem': node_data.get('maxmem'),
+                            'match_field': 'name',
                         })
             except Exception as e:
                 logging.debug(f"Error searching nodes in {cluster_id}: {e}")
@@ -16133,19 +17599,29 @@ def global_search():
     # Sort by relevance (exact matches first, then partial)
     def sort_key(r):
         name = (r.get('name') or str(r.get('vmid', ''))).lower()
+        mf = r.get('match_field', '')
+        # Exact name matches first, then name prefix, then tag matches, then rest
         if name == query:
             return (0, name)
         elif name.startswith(query):
             return (1, name)
-        else:
+        elif mf == 'tag':
             return (2, name)
+        elif mf == 'vmid':
+            return (3, name)
+        else:
+            return (4, name)
     
     results.sort(key=sort_key)
     
+    # NS: show matching tags as clickable suggestions in the UI
+    tag_suggestions = sorted([t for t in all_tags if query in t])[:10] if not prefix_filter or prefix_filter == 'tag' else []
+    
     return jsonify({
-        'query': query,
+        'query': raw_query,
         'count': len(results),
-        'results': results[:100]  # Limit to 100 results
+        'results': results[:100],  # Limit to 100 results
+        'tag_suggestions': tag_suggestions,
     })
 
 
@@ -18220,6 +19696,8 @@ def get_users():
             'created_at': user.get('created_at'),
             'last_login': user.get('last_login'),
             'tenant_id': user.get('tenant_id', DEFAULT_TENANT_ID),  # MK: Added for tenant display
+            'auth_source': user.get('auth_source', 'local'),  # NS: For LDAP/Entra/OIDC badge in user list
+            'permissions': user.get('permissions', []),  # LW: For permission display
         })
     
     return jsonify(users_list)
@@ -18697,6 +20175,9 @@ def update_user(username):
         user['tenant_id'] = data['tenant_id']
     
     if 'password' in data and data['password']:
+        # NS: Block password change for LDAP/OIDC users
+        if user.get('auth_source', 'local') in ('ldap', 'oidc', 'entra'):
+            return jsonify({'error': f"Cannot set password for {user['auth_source']} user. Password is managed by external identity provider."}), 400
         # Validate password policy
         is_valid, error_msg = validate_password_policy(data['password'])
         if not is_valid:
@@ -20061,6 +21542,44 @@ def load_server_settings():
         'ip_whitelist_enabled': False,
         'ip_whitelist': '',  # Comma-separated IPs/CIDRs
         'ip_blacklist': '',  # Comma-separated IPs/CIDRs (always blocked)
+        # NS: Feb 2026 - LDAP defaults (must be here so get_ldap_settings always has values!)
+        # Without these, a partial save (e.g. only ldap_enabled=True) causes "LDAP not configured"
+        'ldap_enabled': False,
+        'ldap_server': '',
+        'ldap_port': 389,
+        'ldap_use_ssl': False,
+        'ldap_use_starttls': False,
+        'ldap_bind_dn': '',
+        'ldap_bind_password': '',
+        'ldap_base_dn': '',
+        'ldap_user_filter': '(&(objectClass=person)(sAMAccountName={username}))',
+        'ldap_username_attribute': 'sAMAccountName',
+        'ldap_email_attribute': 'mail',
+        'ldap_display_name_attribute': 'displayName',
+        'ldap_group_base_dn': '',
+        'ldap_group_filter': '(&(objectClass=group)(member={user_dn}))',
+        'ldap_admin_group': '',
+        'ldap_user_group': '',
+        'ldap_viewer_group': '',
+        'ldap_default_role': 'viewer',
+        'ldap_auto_create_users': True,
+        'ldap_group_mappings': [],
+        # OIDC defaults
+        'oidc_enabled': False,
+        'oidc_provider': 'entra',
+        'oidc_client_id': '',
+        'oidc_client_secret': '',
+        'oidc_tenant_id': '',
+        'oidc_authority': '',
+        'oidc_scopes': 'openid profile email',
+        'oidc_redirect_uri': '',
+        'oidc_admin_group_id': '',
+        'oidc_user_group_id': '',
+        'oidc_viewer_group_id': '',
+        'oidc_default_role': 'viewer',
+        'oidc_auto_create_users': True,
+        'oidc_button_text': 'Sign in with Microsoft',
+        'oidc_group_mappings': [],
     }
     
     try:
@@ -20945,10 +22464,16 @@ def get_server_settings():
     # Add info about existing cert/key files
     settings['ssl_cert_exists'] = os.path.exists(SSL_CERT_FILE)
     settings['ssl_key_exists'] = os.path.exists(SSL_KEY_FILE)
-    # Don't return actual cert/key content or SMTP password
+    # Don't return actual cert/key content or sensitive passwords
     # Mask SMTP password if set
     if settings.get('smtp_password'):
         settings['smtp_password'] = '********'
+    # MK: Mask LDAP bind password - frontend doesn't need the encrypted value
+    if settings.get('ldap_bind_password'):
+        settings['ldap_bind_password'] = '********'
+    # NS: Mask OIDC client secret
+    if settings.get('oidc_client_secret'):
+        settings['oidc_client_secret'] = '********'
     return jsonify(settings)
 
 
@@ -21046,6 +22571,16 @@ def update_server_settings():
                     log_audit(request.session.get('user', 'admin'), 'settings.password_expiry', 
                               f"Admin password expiry {'enabled' if settings['password_expiry_include_admins'] else 'disabled'}")
             
+            # NS: Feb 2026 - Force 2FA for all users
+            if 'force_2fa' in data:
+                old_val = settings.get('force_2fa')
+                settings['force_2fa'] = bool(data['force_2fa'])
+                if old_val != settings['force_2fa']:
+                    log_audit(request.session.get('user', 'admin'), 'settings.force_2fa',
+                              f"Force 2FA {'enabled' if settings['force_2fa'] else 'disabled'}")
+            if 'force_2fa_exclude_admins' in data:
+                settings['force_2fa_exclude_admins'] = bool(data['force_2fa_exclude_admins'])
+            
             # session settings
             if 'session_timeout' in data:
                 settings['session_timeout'] = max(300, min(604800, int(data['session_timeout'])))
@@ -21098,6 +22633,112 @@ def update_server_settings():
                 ]
                 if data['default_theme'] in allowed_themes:
                     settings['default_theme'] = data['default_theme']
+            
+            # LW: Feb 2026 - LDAP/Active Directory settings
+            ldap_keys = {
+                'ldap_enabled': lambda v: bool(v),
+                'ldap_server': lambda v: str(v or '').strip(),
+                'ldap_port': lambda v: max(1, min(65535, int(v or 389))),
+                'ldap_use_ssl': lambda v: bool(v),
+                'ldap_use_starttls': lambda v: bool(v),
+                'ldap_bind_dn': lambda v: str(v or '').strip(),
+                'ldap_base_dn': lambda v: str(v or '').strip(),
+                'ldap_user_filter': lambda v: str(v or '(&(objectClass=person)(sAMAccountName={username}))').strip(),
+                'ldap_username_attribute': lambda v: str(v or 'sAMAccountName').strip(),
+                'ldap_email_attribute': lambda v: str(v or 'mail').strip(),
+                'ldap_display_name_attribute': lambda v: str(v or 'displayName').strip(),
+                'ldap_group_base_dn': lambda v: str(v or '').strip(),
+                'ldap_group_filter': lambda v: str(v or '(&(objectClass=group)(member={user_dn}))').strip(),
+                'ldap_admin_group': lambda v: str(v or '').strip(),
+                'ldap_user_group': lambda v: str(v or '').strip(),
+                'ldap_viewer_group': lambda v: str(v or '').strip(),
+                'ldap_default_role': lambda v: str(v) if v in ['admin', 'user', 'viewer'] else 'viewer',
+                'ldap_auto_create_users': lambda v: bool(v),
+            }
+            
+            for key, transform in ldap_keys.items():
+                if key in data:
+                    settings[key] = transform(data[key])
+            
+            # Handle ldap_bind_password separately (not in the loop to avoid lambda issues)
+            if 'ldap_bind_password' in data:
+                pwd = str(data['ldap_bind_password'] or '')
+                if pwd and pwd != '********':
+                    settings['ldap_bind_password'] = get_db()._encrypt(pwd)  # NS: Encrypt bind credential
+            
+            # LW: Custom group→role mappings (JSON array)
+            if 'ldap_group_mappings' in data:
+                mappings = data['ldap_group_mappings']
+                if isinstance(mappings, list):
+                    # Validate each mapping
+                    clean_mappings = []
+                    for m in mappings:
+                        if isinstance(m, dict) and m.get('group_dn'):
+                            clean_mappings.append({
+                                'group_dn': str(m.get('group_dn', '')).strip(),
+                                'role': str(m.get('role', 'viewer')).strip(),
+                                'tenant': str(m.get('tenant', '')).strip(),
+                                'tenant_role': str(m.get('tenant_role', '')).strip(),
+                                'permissions': m.get('permissions', []),
+                            })
+                    settings['ldap_group_mappings'] = clean_mappings
+            
+            if any(k in data for k in ldap_keys):
+                log_audit(request.session.get('user', 'admin'), 'settings.ldap', 
+                         f"LDAP settings updated (enabled={settings.get('ldap_enabled', False)})")
+                # NS: Feb 2026 - Debug: confirm what was actually saved
+                logging.info(f"[LDAP] Settings saved: enabled={settings.get('ldap_enabled')}, "
+                           f"server='{settings.get('ldap_server', '')}', "
+                           f"base_dn='{settings.get('ldap_base_dn', '')}', "
+                           f"bind_dn='{settings.get('ldap_bind_dn', '')}', "
+                           f"password_set={bool(settings.get('ldap_bind_password'))}")
+            
+            # NS: Feb 2026 - OIDC / Entra ID settings
+            oidc_keys = {
+                'oidc_enabled': lambda v: bool(v),
+                'oidc_provider': lambda v: str(v) if v in ('entra', 'okta', 'generic') else 'entra',
+                'oidc_client_id': lambda v: str(v).strip(),
+                'oidc_tenant_id': lambda v: str(v).strip(),
+                'oidc_authority': lambda v: str(v).strip(),
+                'oidc_scopes': lambda v: str(v).strip() or ('openid profile email User.Read GroupMember.Read.All' if settings.get('oidc_provider') == 'entra' else 'openid profile email'),
+                'oidc_redirect_uri': lambda v: str(v).strip(),
+                'oidc_admin_group_id': lambda v: str(v).strip(),
+                'oidc_user_group_id': lambda v: str(v).strip(),
+                'oidc_viewer_group_id': lambda v: str(v).strip(),
+                'oidc_default_role': lambda v: str(v) if v in (ROLE_ADMIN, ROLE_USER, ROLE_VIEWER) else ROLE_VIEWER,
+                'oidc_auto_create_users': lambda v: bool(v),
+                'oidc_button_text': lambda v: str(v).strip() or 'Sign in with Microsoft',
+            }
+            
+            for key, transform in oidc_keys.items():
+                if key in data:
+                    settings[key] = transform(data[key])
+            
+            # MK: Encrypt OIDC client secret
+            if 'oidc_client_secret' in data:
+                secret = str(data['oidc_client_secret'] or '')
+                if secret and secret != '********':
+                    settings['oidc_client_secret'] = get_db()._encrypt(secret)
+            
+            # LW: OIDC custom group mappings
+            if 'oidc_group_mappings' in data:
+                mappings = data['oidc_group_mappings']
+                if isinstance(mappings, list):
+                    clean = []
+                    for m in mappings:
+                        if isinstance(m, dict) and (m.get('group_id') or m.get('group_dn')):
+                            clean.append({
+                                'group_id': str(m.get('group_id') or m.get('group_dn', '')).strip(),
+                                'role': str(m.get('role', 'viewer')).strip(),
+                                'tenant': str(m.get('tenant', '')).strip(),
+                                'tenant_role': str(m.get('tenant_role', '')).strip(),
+                                'permissions': m.get('permissions', []),
+                            })
+                    settings['oidc_group_mappings'] = clean
+            
+            if any(k in data for k in oidc_keys):
+                log_audit(request.session.get('user', 'admin'), 'settings.oidc', 
+                         f"OIDC settings updated (enabled={settings.get('oidc_enabled', False)}, provider={settings.get('oidc_provider', 'entra')})")
             
         else:
             # form-data (for file uploads)
@@ -22344,22 +23985,43 @@ def index():
     """Serve the web interface"""
     return send_from_directory(WEB_DIR, 'index.html')
 
+@app.route('/oidc/callback')
+def oidc_callback_page():
+    """NS: Feb 2026 - Serve SPA for OIDC redirect callback
+    
+    Identity providers redirect here with ?code=xxx&state=yyy
+    The frontend JS picks up the params and calls the API callback endpoint
+    """
+    return send_from_directory(WEB_DIR, 'index.html')
+
 @app.route('/api/status', methods=['GET'])
 def get_status():
-    """Get PegaProx system status - includes version info"""
-    return jsonify({
+    """Get PegaProx system status - includes version info
+    
+    NS: unauthenticated users only get version + build, no cluster details
+    """
+    basic_status = {
         'version': PEGAPROX_VERSION,
         'build': PEGAPROX_BUILD,
-        'encryption': {
-            'available': ENCRYPTION_AVAILABLE,
-            'enabled': ENCRYPTION_AVAILABLE and os.path.exists(KEY_FILE),
-            'config_encrypted': os.path.exists(CONFIG_FILE_ENCRYPTED)
-        },
-        'clusters_count': len(cluster_managers),
         'totp_available': TOTP_AVAILABLE,
-        'gevent_available': GEVENT_AVAILABLE,
-        'ssh': get_ssh_connection_stats()  # NS: Jan 2026 - SSH connection pool stats
-    })
+    }
+    
+    # MK: don't show cluster details to unauthenticated users (was leaking infra info)
+    session_id = request.headers.get('X-Session-ID') or request.cookies.get('session_id')
+    session = validate_session(session_id) if session_id else None
+    if session:
+        basic_status.update({
+            'encryption': {
+                'available': ENCRYPTION_AVAILABLE,
+                'enabled': ENCRYPTION_AVAILABLE and os.path.exists(KEY_FILE),
+                'config_encrypted': os.path.exists(CONFIG_FILE_ENCRYPTED)
+            },
+            'clusters_count': len(cluster_managers),
+            'gevent_available': GEVENT_AVAILABLE,
+            'ssh': get_ssh_connection_stats(),
+        })
+    
+    return jsonify(basic_status)
 
 
 @app.route('/api/support-bundle', methods=['GET'])
@@ -22589,7 +24251,31 @@ def generate_support_bundle():
                         safe_env_vars[key] = value
             zf.writestr(f"{bundle_prefix}/environment.json", json.dumps(safe_env_vars, indent=2))
             
-            # 13. README
+            # 13. PegaProx SSH Session Log (last 100 entries)
+            # NS: Feb 2026 - Track SSH sessions opened through PegaProx WebSocket terminal
+            try:
+                db = get_db()
+                cursor = db.conn.cursor()
+                cursor.execute('''
+                    SELECT timestamp, user, action, details, ip_address 
+                    FROM audit_log 
+                    WHERE action LIKE 'ssh.%' OR action LIKE 'node.shell%'
+                    ORDER BY timestamp DESC LIMIT 100
+                ''')
+                ssh_entries = []
+                for row in cursor.fetchall():
+                    ssh_entries.append({
+                        'timestamp': row[0],
+                        'user': row[1],
+                        'action': row[2],
+                        'details': row[3],
+                        'ip': row[4]
+                    })
+                zf.writestr(f"{bundle_prefix}/ssh_sessions.json", json.dumps(ssh_entries, indent=2))
+            except Exception as e:
+                zf.writestr(f"{bundle_prefix}/ssh_sessions_error.txt", f"Failed: {str(e)}")
+            
+            # 14. README
             readme = f"""PegaProx Support Bundle
 ========================
 Generated: {datetime.now().isoformat()}
@@ -22608,6 +24294,7 @@ Contents:
 - pegaprox.log: Application log (last 1000 lines, sensitive data redacted)
 - recent_tasks.json: Recent Proxmox tasks from all clusters
 - environment.json: Relevant environment variables
+- ssh_sessions.json: Last 100 PegaProx SSH terminal sessions (connects, disconnects, failures)
 
 Privacy Note:
 Sensitive information (passwords, tokens, secrets, API keys) has been 
@@ -29850,6 +31537,34 @@ def join_node_to_cluster(cluster_id):
         user = getattr(request, 'session', {}).get('user', 'system')
         log_audit(user, 'cluster.node_joined', f"Node {node_ip} joined cluster", cluster=mgr.config.name)
         
+        # NS: Feb 2026 - Update fallback hosts and HA after node join
+        # Without this, the new node won't be a fallback target until HA's periodic 60s refresh
+        def _post_join_update():
+            """Background task: update fallback hosts + HA after join settles"""
+            time.sleep(15)  # Wait for Proxmox cluster to sync the new node
+            try:
+                # Refresh connection to discover new node
+                mgr.connect_to_proxmox()
+                
+                # Rediscover fallback hosts (includes the new node)
+                if hasattr(mgr, '_auto_discover_fallback_hosts'):
+                    old_fallbacks = list(mgr.config.fallback_hosts or [])
+                    mgr._auto_discover_fallback_hosts()
+                    new_fallbacks = list(mgr.config.fallback_hosts or [])
+                    if old_fallbacks != new_fallbacks:
+                        logging.info(f"[Join] Updated fallback hosts after node join: {old_fallbacks} → {new_fallbacks}")
+                
+                # If HA is active, update its node tracking
+                if hasattr(mgr, 'ha_enabled') and mgr.ha_enabled:
+                    if hasattr(mgr, '_ha_update_fallback_hosts'):
+                        mgr._ha_update_fallback_hosts()
+                    logging.info(f"[Join] HA fallback hosts updated after node join")
+                
+            except Exception as e:
+                logging.warning(f"[Join] Post-join update error (non-critical): {e}")
+        
+        threading.Thread(target=_post_join_update, daemon=True).start()
+        
         return jsonify({
             'success': True,
             'message': f'Node successfully joined the cluster. It may take a moment to appear in the dashboard.'
@@ -30171,15 +31886,45 @@ def remove_node_from_cluster(cluster_id, node_name):
             logging.info(f"Removed {node_name} from excluded_nodes")
         
         # MK: Clean up fallback_hosts - remove IPs of deleted node
+        # NS: Feb 2026 - Use pre-resolved IP (removed_node_ip) instead of _get_node_ip()
+        # because _get_node_ip() queries Proxmox API which no longer knows this node after pvecm delnode!
         fallback = getattr(mgr.config, 'fallback_hosts', []) or []
-        node_ip = mgr._get_node_ip(node_name) if hasattr(mgr, '_get_node_ip') else None
-        if node_ip and node_ip in fallback:
-            fallback.remove(node_ip)
+        if removed_node_ip and removed_node_ip in fallback:
+            fallback.remove(removed_node_ip)
             mgr.config.fallback_hosts = fallback
-            logging.info(f"Removed {node_ip} from fallback_hosts")
+            logging.info(f"Removed {removed_node_ip} from fallback_hosts")
+        
+        # NS: Feb 2026 - Clean up HA node status for removed node
+        if hasattr(mgr, 'ha_node_status') and node_name in mgr.ha_node_status:
+            with mgr.ha_lock:
+                del mgr.ha_node_status[node_name]
+            logging.info(f"[RemoveNode] Cleaned up HA tracking for {node_name}")
+        
+        # Clean up HA recovery state
+        if hasattr(mgr, 'ha_recovery_in_progress'):
+            mgr.ha_recovery_in_progress.pop(node_name, None)
         
         # Save changes to database
         save_config()
+        
+        # NS: Feb 2026 - Full fallback rediscovery in background
+        # This ensures the fallback list is fully accurate after removal
+        def _post_remove_update():
+            """Background: rediscover fallback hosts after node removal"""
+            time.sleep(5)  # Wait for cluster to settle
+            try:
+                mgr.connect_to_proxmox()
+                if hasattr(mgr, '_auto_discover_fallback_hosts'):
+                    mgr.config.fallback_hosts = []  # Clear and rediscover
+                    mgr._auto_discover_fallback_hosts()
+                    logging.info(f"[RemoveNode] Rediscovered fallback hosts: {mgr.config.fallback_hosts}")
+                    save_config()
+                if hasattr(mgr, 'ha_enabled') and mgr.ha_enabled and hasattr(mgr, '_ha_update_fallback_hosts'):
+                    mgr._ha_update_fallback_hosts()
+            except Exception as e:
+                logging.warning(f"[RemoveNode] Post-remove update error (non-critical): {e}")
+        
+        threading.Thread(target=_post_remove_update, daemon=True).start()
         
         # Log the action
         user = getattr(request, 'session', {}).get('user', 'system')
@@ -32768,6 +34513,16 @@ async def ssh_handler(websocket):
         
         print(f"SSH connected: {cluster_id}/{node}")
         
+        # NS: Feb 2026 - Audit log SSH sessions for support bundle tracking
+        pegaprox_user = 'unknown'
+        try:
+            if session_id and session_id in active_sessions:
+                pegaprox_user = active_sessions[session_id].get('user', 'unknown')
+        except:
+            pass
+        log_audit(pegaprox_user, 'ssh.session_start', 
+                  f"SSH session opened to {ssh_user}@{node_ip} (node={node}, cluster={cluster_id})")
+        
         # Send connected status - frontend will clear terminal
         await websocket.send('{"status":"connected"}')
         
@@ -32806,9 +34561,21 @@ async def ssh_handler(websocket):
         await asyncio.gather(ssh_to_ws(), ws_to_ssh(), return_exceptions=True)
     except paramiko.AuthenticationException as e:
         print(f"SSH auth failed: {e}")
+        try:
+            _ssh_user = active_sessions.get(session_id, {}).get('user', 'unknown') if session_id else 'unknown'
+            log_audit(_ssh_user, 'ssh.auth_failed', 
+                      f"SSH auth failed for {ssh_user}@{node_ip} (node={node}, cluster={cluster_id})")
+        except:
+            pass
         await websocket.send(f'\\r\\n\\x1b[31mSSH Authentication Failed\\x1b[0m\\r\\nCheck cluster credentials.\\r\\n')
     except Exception as e:
         print(f"SSH error: {e}")
+        try:
+            _ssh_user = active_sessions.get(session_id, {}).get('user', 'unknown') if session_id else 'unknown'
+            log_audit(_ssh_user, 'ssh.error', 
+                      f"SSH error to {node_ip} (node={node}, cluster={cluster_id}): {str(e)[:100]}")
+        except:
+            pass
         try:
             await websocket.send(f"\\r\\n\\x1b[31mSSH Error: {e}\\x1b[0m\\r\\n")
         except:
@@ -32816,6 +34583,12 @@ async def ssh_handler(websocket):
     finally:
         try:
             ssh.close()
+        except:
+            pass
+        try:
+            _ssh_user = active_sessions.get(session_id, {}).get('user', 'unknown') if session_id else 'unknown'
+            log_audit(_ssh_user, 'ssh.session_end', 
+                      f"SSH session closed (node={node}, cluster={cluster_id})")
         except:
             pass
         print(f"SSH disconnected: {cluster_id}/{node}")
@@ -35668,7 +37441,10 @@ def get_node_apt_updates_api(cluster_id, node):
         return jsonify({'error': 'Cluster not found'}), 404
     
     manager = cluster_managers[cluster_id]
-    return jsonify(manager.get_node_apt_updates(node))
+    try:
+        return jsonify(manager.get_node_apt_updates(node))
+    except Exception as e:
+        return jsonify({'error': f'Failed to check updates: {str(e)}', 'updates': []}), 500
 
 
 @app.route('/api/clusters/<cluster_id>/nodes/<node>/apt/refresh', methods=['POST'])
@@ -35932,31 +37708,48 @@ def check_cluster_updates(cluster_id):
         })
     
     for node_name in node_names:
-        try:
-            updates = mgr.get_node_apt_updates(node_name)
-            
-            if isinstance(updates, list):
-                update_list = updates
-            elif isinstance(updates, dict):
-                update_list = updates.get('data', [])
-            else:
-                update_list = []
-            
-            results[node_name] = {
-                'success': True,
-                'updates': update_list,
-                'count': len(update_list)
-            }
-        except Exception as e:
+        # MK: Feb 2026 - Retry up to 2 times on failure, with clear error reporting
+        max_retries = 2
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                updates = mgr.get_node_apt_updates(node_name)
+                
+                if isinstance(updates, list):
+                    update_list = updates
+                elif isinstance(updates, dict):
+                    update_list = updates.get('data', [])
+                else:
+                    update_list = []
+                
+                results[node_name] = {
+                    'success': True,
+                    'updates': update_list,
+                    'count': len(update_list),
+                    'retries': attempt
+                }
+                last_error = None
+                break  # Success, no more retries
+            except Exception as e:
+                last_error = str(e)
+                if attempt < max_retries:
+                    logging.warning(f"[UpdateCheck] {node_name} attempt {attempt+1} failed: {e}, retrying...")
+                    time.sleep(2)
+        
+        # LW: If all retries failed, show clear error state
+        if last_error:
+            logging.error(f"[UpdateCheck] {node_name} failed after {max_retries+1} attempts: {last_error}")
             results[node_name] = {
                 'success': False,
-                'error': str(e),
+                'error': last_error,
                 'updates': [],
-                'count': 0
+                'count': -1  # NS: -1 signals "check failed" vs 0 which means "no updates"
             }
     
-    total_updates = sum(r.get('count', 0) for r in results.values())
+    # MK: count > 0 for updates, ignore -1 (failed checks)
+    total_updates = sum(max(r.get('count', 0), 0) for r in results.values())
     nodes_with_updates = sum(1 for r in results.values() if r.get('count', 0) > 0)
+    nodes_failed = sum(1 for r in results.values() if not r.get('success', True))
     
     # LW: store timestamp so we can show when last checked
     mgr._last_update_check = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -35967,6 +37760,7 @@ def check_cluster_updates(cluster_id):
         'summary': {
             'total_updates': total_updates,
             'nodes_with_updates': nodes_with_updates,
+            'nodes_failed': nodes_failed,
             'total_nodes': len(results),
             'checked_at': mgr._last_update_check
         }
@@ -36141,7 +37935,12 @@ def start_rolling_update(cluster_id):
                         except:
                             pass
                         
-                        available_updates = mgr.get_node_apt_updates(node_name)
+                        try:
+                            available_updates = mgr.get_node_apt_updates(node_name)
+                        except Exception as e:
+                            mgr._rolling_update['logs'].append(f"[{time.strftime('%H:%M:%S')}] ⚠ Failed to check updates on {node_name}: {e}")
+                            logging.warning(f"[RollingUpdate] Update check failed for {node_name}: {e}")
+                            available_updates = []
                         update_count = len(available_updates) if available_updates else 0
                         
                         if update_count == 0:
@@ -37572,14 +39371,46 @@ def broadcast_resources_loop():
             if loop_count % 10 == 1:  # Log every 10th loop
                 logging.debug(f"[SSE] Broadcasting to {client_count} clients (loop {loop_count})")
             
+            # NS: Feb 2026 - Periodic ticket refresh (Proxmox tickets expire after 2h)
+            # Re-authenticate every 90 minutes to prevent stale tickets
+            if loop_count % 5400 == 0:  # 5400 loops × 1s = 90 minutes
+                for cid, mgr in list(cluster_managers.items()):
+                    if mgr.is_connected and not getattr(mgr, '_using_api_token', False):
+                        try:
+                            logging.info(f"[SSE] Refreshing Proxmox ticket for cluster '{cid}'")
+                            mgr.connect_to_proxmox()
+                        except Exception as e:
+                            logging.warning(f"[SSE] Ticket refresh failed for '{cid}': {e}")
+            
             def broadcast_for_cluster(cid, mgr):
                 """Broadcast updates for a single cluster - runs in own thread"""
                 try:
-                    # SKIP OFFLINE CLUSTERS - Don't wait for timeouts!
+                    # NS: Feb 2026 - AUTO-RECONNECT disconnected clusters
+                    # Without this, a network reload (ifreload) permanently kills the connection
+                    # until PegaProx is restarted. Now we retry every 10 seconds.
                     if not mgr.is_connected:
-                        # Send empty data for offline clusters so UI knows
-                        broadcast_sse('tasks', [], cid)
-                        return
+                        now = time.time()
+                        if now - mgr._last_reconnect_attempt >= 10:
+                            mgr._last_reconnect_attempt = now
+                            logging.info(f"[SSE] Cluster '{cid}' is disconnected, attempting reconnect...")
+                            try:
+                                if mgr.connect_to_proxmox():
+                                    logging.info(f"[SSE] Cluster '{cid}' reconnected successfully!")
+                                    # Notify all SSE clients that cluster is back online
+                                    broadcast_sse('node_status', {
+                                        'event': 'cluster_reconnected',
+                                        'cluster_id': cid,
+                                        'message': f'Connection to cluster restored'
+                                    }, cid)
+                                else:
+                                    logging.debug(f"[SSE] Cluster '{cid}' reconnect failed, will retry in 10s")
+                            except Exception as e:
+                                logging.debug(f"[SSE] Cluster '{cid}' reconnect error: {e}")
+                        
+                        if not mgr.is_connected:
+                            # Still disconnected - send empty data so UI knows
+                            broadcast_sse('tasks', [], cid)
+                            return
                     
                     # Get tasks every loop - always broadcast (even empty list)
                     tasks = mgr.get_tasks(limit=50)
@@ -37600,6 +39431,16 @@ def broadcast_resources_loop():
                         resources = mgr.get_vm_resources()
                         if resources:
                             broadcast_sse('resources', resources, cid)
+                            # NS: Feb 2026 - Reset stale counter on success
+                            mgr._consecutive_empty_responses = 0
+                        else:
+                            # NS: Feb 2026 - Track empty responses while "connected"
+                            # This catches stale tickets (Proxmox returns 401 but no exception)
+                            mgr._consecutive_empty_responses = getattr(mgr, '_consecutive_empty_responses', 0) + 1
+                            if mgr._consecutive_empty_responses >= 10:  # ~10s of empty data
+                                logging.warning(f"[SSE] Cluster '{cid}' returning empty data despite being 'connected' - forcing re-auth")
+                                mgr._consecutive_empty_responses = 0
+                                mgr.is_connected = False  # Force reconnect on next loop
                     except:
                         pass
                         
@@ -37836,6 +39677,128 @@ def test_smtp():
         return jsonify({'success': True, 'message': f'Test email sent to {test_email}'})
     else:
         return jsonify({'error': error or 'Failed to send test email'}), 400
+
+
+# =====================================================
+# MK: Feb 2026 - LDAP Test Connection
+# =====================================================
+
+@app.route('/api/settings/ldap/test', methods=['POST'])
+@require_auth(roles=[ROLE_ADMIN])
+def test_ldap():
+    """Test LDAP connection and optionally test user authentication"""
+    data = request.json or {}
+    
+    # NS: Build config from request data (for testing before save)
+    saved = load_server_settings()
+    
+    config = {
+        'enabled': True,  # Force enabled for test
+        'server': data.get('ldap_server', saved.get('ldap_server', '')),
+        'port': int(data.get('ldap_port', saved.get('ldap_port', 389))),
+        'use_ssl': data.get('ldap_use_ssl', saved.get('ldap_use_ssl', False)),
+        'use_starttls': data.get('ldap_use_starttls', saved.get('ldap_use_starttls', False)),
+        'bind_dn': data.get('ldap_bind_dn', saved.get('ldap_bind_dn', '')),
+        'bind_password': data.get('ldap_bind_password', ''),
+        'base_dn': data.get('ldap_base_dn', saved.get('ldap_base_dn', '')),
+        'user_filter': data.get('ldap_user_filter', saved.get('ldap_user_filter', '(&(objectClass=person)(sAMAccountName={username}))')),
+        'username_attribute': data.get('ldap_username_attribute', saved.get('ldap_username_attribute', 'sAMAccountName')),
+        'email_attribute': data.get('ldap_email_attribute', saved.get('ldap_email_attribute', 'mail')),
+        'display_name_attribute': data.get('ldap_display_name_attribute', saved.get('ldap_display_name_attribute', 'displayName')),
+    }
+    
+    # Use saved password if masked
+    if not config['bind_password'] or config['bind_password'] == '********':
+        config['bind_password'] = get_db()._decrypt(saved.get('ldap_bind_password', ''))  # MK: Decrypt stored credential
+    
+    if not config['server']:
+        return jsonify({'error': 'LDAP server is required'}), 400
+    
+    try:
+        import ldap3
+        from ldap3 import Server, Connection, ALL, SUBTREE, Tls
+        from ldap3.utils.conv import escape_filter_chars
+        import ssl as ssl_module
+    except ImportError:
+        return jsonify({'error': 'ldap3 module not installed. Run: pip install ldap3'}), 500
+    
+    results = {'steps': []}
+    
+    try:
+        # Step 1: Connect to server
+        tls_config = None
+        if config['use_ssl'] or config['use_starttls']:
+            tls_config = Tls(validate=ssl_module.CERT_NONE)
+        
+        server = Server(config['server'], port=config['port'], 
+                       use_ssl=config['use_ssl'], tls=tls_config, 
+                       get_info=ALL, connect_timeout=10)
+        results['steps'].append({'step': 'Server connection', 'status': 'ok', 'detail': f"{config['server']}:{config['port']}"})
+        
+        # Step 2: Bind with service account
+        # NS: same fix as ldap_authenticate - starttls before bind!!
+        use_starttls = config['use_starttls'] and not config['use_ssl']
+        
+        if config['bind_dn'] and config['bind_password']:
+            conn = Connection(server, user=config['bind_dn'], password=config['bind_password'],
+                            raise_exceptions=True)
+        else:
+            conn = Connection(server, raise_exceptions=True)
+        
+        conn.open()
+        
+        if use_starttls:
+            conn.start_tls()
+            results['steps'].append({'step': 'STARTTLS', 'status': 'ok'})
+        
+        conn.bind()
+        
+        if config['bind_dn'] and config['bind_password']:
+            results['steps'].append({'step': 'Service account bind', 'status': 'ok', 'detail': config['bind_dn']})
+        else:
+            results['steps'].append({'step': 'Anonymous bind', 'status': 'ok'})
+        
+        # Step 3: Search base DN
+        if config['base_dn']:
+            conn.search(config['base_dn'], '(objectClass=*)', search_scope='BASE', attributes=['dn'])
+            results['steps'].append({'step': 'Base DN accessible', 'status': 'ok', 'detail': config['base_dn']})
+        
+        # Step 4: Optional - test user search
+        test_username = data.get('test_username', '')
+        if test_username and config['base_dn']:
+            user_filter = config['user_filter'].replace('{username}', escape_filter_chars(test_username))
+            conn.search(config['base_dn'], user_filter, search_scope=SUBTREE,
+                       attributes=[config['username_attribute'], config['email_attribute'], 
+                                  config['display_name_attribute'], 'memberOf'])
+            
+            if conn.entries:
+                entry = conn.entries[0]
+                user_info = {
+                    'dn': str(entry.entry_dn),
+                    'email': str(entry[config['email_attribute']]) if config['email_attribute'] in entry else '',
+                    'display_name': str(entry[config['display_name_attribute']]) if config['display_name_attribute'] in entry else '',
+                    'groups': len(entry['memberOf']) if 'memberOf' in entry else 0
+                }
+                results['steps'].append({'step': f'User search: {test_username}', 'status': 'ok', 'detail': user_info})
+            else:
+                results['steps'].append({'step': f'User search: {test_username}', 'status': 'warning', 'detail': 'User not found'})
+        
+        # LW: Get server info
+        results['server_info'] = {
+            'vendor': str(server.info.vendor_name) if server.info and server.info.vendor_name else 'Unknown',
+            'naming_contexts': [str(nc) for nc in (server.info.naming_contexts or [])] if server.info else [],
+        }
+        
+        conn.unbind()
+        results['success'] = True
+        results['message'] = 'LDAP connection successful'
+        
+    except Exception as e:
+        results['success'] = False
+        results['error'] = str(e)
+        results['steps'].append({'step': 'Connection', 'status': 'error', 'detail': str(e)})
+    
+    return jsonify(results)
 
 
 # =====================================================
@@ -39647,15 +41610,15 @@ def print_system_requirements():
 ║                    PegaProx System Requirements Guide                         ║
 ║                           Version 0.6 Beta - Jan 2026                         ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
-║  Clusters │ Concurrent │  CPU    │  RAM   │  Disk  │  Notes                  ║
-║           │   Users    │ Cores   │        │        │                         ║
+║  Clusters â”‚ Concurrent â”‚  CPU    â”‚  RAM   â”‚  Disk  â”‚  Notes                  ║
+║           â”‚   Users    â”‚ Cores   â”‚        â”‚        â”‚                         ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
-║  1-5      │  1-5       │ 1 core  │  1 GB  │  1 GB  │  Testing/Home Lab       ║
-║  5-20     │  5-10      │ 2 cores │  2 GB  │  5 GB  │  Small Production       ║
-║  20-50    │  10-25     │ 4 cores │  4 GB  │ 10 GB  │  Medium Production      ║
-║  50-100   │  25-50     │ 4 cores │  8 GB  │ 20 GB  │  Large Production       ║
-║  100-200  │  50-100    │ 8 cores │ 16 GB  │ 50 GB  │  Enterprise             ║
-║  200+     │  100+      │ 16 cores│ 32 GB  │100 GB  │  Large Enterprise       ║
+║  1-5      â”‚  1-5       â”‚ 1 core  â”‚  1 GB  â”‚  1 GB  â”‚  Testing/Home Lab       ║
+║  5-20     â”‚  5-10      â”‚ 2 cores â”‚  2 GB  â”‚  5 GB  â”‚  Small Production       ║
+║  20-50    â”‚  10-25     â”‚ 4 cores â”‚  4 GB  â”‚ 10 GB  â”‚  Medium Production      ║
+║  50-100   â”‚  25-50     â”‚ 4 cores â”‚  8 GB  â”‚ 20 GB  â”‚  Large Production       ║
+║  100-200  â”‚  50-100    â”‚ 8 cores â”‚ 16 GB  â”‚ 50 GB  â”‚  Enterprise             ║
+║  200+     â”‚  100+      â”‚ 16 coresâ”‚ 32 GB  â”‚100 GB  â”‚  Large Enterprise       ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  Performance Tips:                                                            ║
 ║  • Install gevent: pip install gevent (2-3x better concurrency)              ║
@@ -39703,6 +41666,7 @@ def download_static_files():
             ('react.production.min.js', 'https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js'),
             ('react-dom.production.min.js', 'https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js'),
             ('babel.min.js', 'https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js'),
+            ('chart.umd.min.js', 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js'),
             ('xterm.min.js', 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js'),
             ('xterm-addon-fit.min.js', 'https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js'),
         ],
@@ -39970,7 +41934,7 @@ Usage:
 Options:
   --debug           verbose logging
   --requirements    show requirements
-  --download-static download js libs for offline mode (React, Babel, xterm, noVNC)
+  --download-static download js libs for offline mode (React, Babel, Chart.js, xterm, noVNC)
   --help, -h        this message
 
 Env vars:

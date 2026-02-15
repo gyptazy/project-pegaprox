@@ -1,33 +1,25 @@
 {
-    "version": "0.6.5",
-    "build": "2026.02.08",
-    "release_date": "2026-02-08",
+    "version": "0.6.6",
+    "build": "2026.02.15",
+    "release_date": "2026-02-15",
     "min_python": "3.8",
     "download_url": "https://github.com/PegaProx/project-pegaprox/releases/latest",
     "update_files": [
         "pegaprox_multi_cluster.py",
         "web/index.html",
-        "web/index.html.original"
+        "web/index.html.original",
+        "requirements.txt"
     ],
     "changelog": [
-        "Important: Due to high demand, PegaProx releases will now be weekly due to shortage of our capacity to handle support requests. Please wait patiently.",
-        "Added: SDN (Software Defined Networking) Management - view and manage zones, vnets, subnets, controllers, IPAM, and DNS (GitHub Issue #38)",
-        "Added: Easy Setup Multipath support for ISCSI",
-        "Added: Remove Node from Cluster - runs pvecm delnode with automatic cleanup of stale config on removed node via SSH",
-        "Added: Move Node to another Cluster - automated 3-step flow: remove from source, cleanup, force join to target",
-        "Added: SSH multipath detection with credential fallbacks for cluster operations",
-        "Added: Node IP resolution via vmbr0 bridge interface - more reliable than hostname/DNS lookup in multi-network setups",
-        "Added: Support Bundle generation for troubleshooting",
-        "Added: API Token Management - create, list, and revoke Bearer tokens for programmatic access (scripts, CI/CD, monitoring)",
-        "Added: Storage Rescan functionality",
-        "Added: Taskbar expand when new Task occurs can be disabled under my profile",
-        "Fixed: SSE/Taskbar oscillation bug in 'All Clusters' view causing excessive re-renders",
-        "Fixed: Node IP resolution now happens BEFORE pvecm delnode to prevent cleanup running on wrong node",
-        "Fixed: Taskbar expand icon changed from ChevronUp to ChevronDown (thanks @gyptazy)",
-        "Improved: Node removal buttons relocated from maintenance-start dialog to maintenance-completed section (logical flow)",
-        "Improved: Offline node check changed from blocker to warning (pvecm delnode runs on remaining online node, not target)",
-        "Improved: Force Join checkbox always visible with auto-check when old config detected",
-        "Improved: Cleanup scripts use killall -9 for reliable pmxcfs termination"
+        "Added: Network auto-reconnect after ifreload/network changes with automatic ticket refresh (90min cycle)",
+        "Added: Stale connection detection - auto-recovers after 10 consecutive empty API responses",
+        "Added: Node Join now auto-updates fallback hosts and HA state via background thread",
+        "Added: Node Remove uses pre-resolved IP for cleanup, updates HA state and fallback hosts",
+        "Added: LDAP and OIDC Support",
+        "Added: Microsoft 365 GCC High and DoD sovereign endpoint support for Entra ID OIDC",
+        "Added: Alexandre Derumier (@aderumier) as contributor for performance chart styling",
+        "Added: Option to force 2FA for users",
+        "Changed: Load balancing logic now with multiple nodes and vms"
     ],
     "breaking_changes": []
 }
