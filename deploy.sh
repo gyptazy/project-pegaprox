@@ -228,7 +228,8 @@ main() {
     print_step "Step 6/6: Configuring Service"
 
     # Interactive port selection
-    if [ "$INTERACTIVE" = true ]; then
+    # Check stdin is a terminal (not piped), so curl | bash installs don't hang
+    if [ "$INTERACTIVE" = true ] && [ -t 0 ]; then
         echo -e "${YELLOW}Select access port:${NC}"
         echo "  1) Default (5000) - Standard ports"
         echo "  2) HTTPS (443)    - Professional setup"
