@@ -7134,7 +7134,7 @@ class PegaProxManager:
             
             # Get SSH credentials from cluster config
             api_user = self.config.user
-            ssh_user = api_user.split('@')[0] if '@' in api_user else api_user
+            ssh_user = (api_user or 'root').split('@')[0]
             ssh_password = self.config.pass_
             ssh_key = getattr(self.config, 'ssh_key', '')
             
@@ -7227,7 +7227,7 @@ class PegaProxManager:
                 return False
             
             api_user = self.config.user
-            ssh_user = api_user.split('@')[0] if '@' in api_user else api_user
+            ssh_user = (api_user or 'root').split('@')[0]
             ssh_password = self.config.pass_
             ssh_key = getattr(self.config, 'ssh_key', '')
             
@@ -8036,7 +8036,7 @@ WantedBy=multi-user.target
                 return False
             
             api_user = self.config.user
-            ssh_user = api_user.split('@')[0] if '@' in api_user else api_user
+            ssh_user = (api_user or 'root').split('@')[0]
             ssh_password = self.config.pass_
             ssh_key = getattr(self.config, 'ssh_key', '')
             
@@ -8619,7 +8619,7 @@ echo "AGENT_INSTALLED_OK"
             # Use cluster credentials - same as Proxmox API login
             # User format is usually "root@pam" - extract just the username
             api_user = self.config.user  # e.g. "root@pam"
-            ssh_user = api_user.split('@')[0] if '@' in api_user else api_user  # -> "root"
+            ssh_user = (api_user or 'root').split('@')[0]  # -> "root"
             ssh_password = self.config.pass_
             ssh_key = getattr(self.config, 'ssh_key', '')  # SSH private key from cluster config
             
@@ -8702,7 +8702,7 @@ echo "AGENT_INSTALLED_OK"
             
             # Use cluster credentials
             api_user = self.config.user
-            ssh_user = api_user.split('@')[0] if '@' in api_user else api_user
+            ssh_user = (api_user or 'root').split('@')[0]
             ssh_password = self.config.pass_
             ssh_key = getattr(self.config, 'ssh_key', '')  # SSH key from cluster config
             
@@ -8954,7 +8954,7 @@ echo "AGENT_INSTALLED_OK"
             
             # Get SSH credentials
             api_user = self.config.user
-            ssh_user = api_user.split('@')[0] if '@' in api_user else api_user
+            ssh_user = (api_user or 'root').split('@')[0]
             ssh_password = self.config.pass_
             
             surviving_ip = self._ha_get_node_ip(surviving_node)
@@ -9236,7 +9236,7 @@ echo "AGENT_INSTALLED_OK"
             
             # Use cluster credentials for SSH
             api_user = self.config.user
-            ssh_user = api_user.split('@')[0] if '@' in api_user else api_user
+            ssh_user = (api_user or 'root').split('@')[0]
             ssh_password = self.config.pass_
             
             # Build the move command - use mv to atomically move the config
@@ -29049,7 +29049,7 @@ def _get_node_multipath_data(manager, node):
         ssh_user = getattr(manager.config, 'ssh_user', None) or ''
         if not ssh_user:
             api_user = manager.config.user  # e.g. "root@pam"
-            ssh_user = api_user.split('@')[0] if '@' in api_user else (api_user or 'root')
+            ssh_user = (api_user or 'root').split('@')[0]
         
         # 2. ssh_key: from config (may be empty)
         ssh_key_content = getattr(manager.config, 'ssh_key', '') or ''
@@ -29327,7 +29327,7 @@ def setup_multipath(cluster_id):
         ssh_user = getattr(manager.config, 'ssh_user', None) or ''
         if not ssh_user:
             api_user = manager.config.user
-            ssh_user = api_user.split('@')[0] if '@' in api_user else (api_user or 'root')
+            ssh_user = (api_user or 'root').split('@')[0]
         ssh_key_content = getattr(manager.config, 'ssh_key', '') or ''
         ssh_password = getattr(manager.config, 'pass_', '') or ''
         
@@ -29664,7 +29664,7 @@ def reconfigure_multipath(cluster_id, node):
         ssh_user = getattr(manager.config, 'ssh_user', None) or ''
         if not ssh_user:
             api_user = manager.config.user
-            ssh_user = api_user.split('@')[0] if '@' in api_user else (api_user or 'root')
+            ssh_user = (api_user or 'root').split('@')[0]
         ssh_key_content = getattr(manager.config, 'ssh_key', '') or ''
         ssh_password = getattr(manager.config, 'pass_', '') or ''
         
@@ -31790,7 +31790,7 @@ def remove_node_from_cluster(cluster_id, node_name):
         ssh_user = getattr(cluster_config, 'ssh_user', None) or ''
         if not ssh_user:
             api_user = cluster_config.user
-            ssh_user = api_user.split('@')[0] if '@' in api_user else (api_user or 'root')
+            ssh_user = (api_user or 'root').split('@')[0]
         ssh_password = getattr(cluster_config, 'pass_', '') or ''
         ssh_key_content = getattr(cluster_config, 'ssh_key', '') or ''
         
