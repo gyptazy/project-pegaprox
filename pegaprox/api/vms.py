@@ -678,31 +678,52 @@ def upload_to_datastore(cluster_id, storage_name):
     manager, error = get_connected_manager(cluster_id)
     if error:
         return error
-    
+
+    # XCP-ng upload handled separately
+    if getattr(manager, 'cluster_type', 'proxmox') == 'xcpng':
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        file = request.files['file']
+        content_type = request.form.get('content', 'iso')
+        node = request.form.get('node') or ''
+        result = manager.upload_to_storage(node, storage_name, file.filename, file.stream, content_type)
+        if result.get('success'):
+            return jsonify(result)
+        return jsonify({'error': result.get('error', 'Upload failed')}), 500
+
+    tmp_path = None
     try:
         host = manager.current_host or manager.config.host
         node = request.form.get('node') or request.args.get('node')
         content_type = request.form.get('content', 'iso')  # iso, vztmpl, etc.
-        
+
         if not node:
-            # Find a node that has this storage
-            nodes_url = f"https://{host}:8006/api2/json/nodes"
-            nodes_response = manager._create_session().get(nodes_url, timeout=5)
-            if nodes_response.status_code == 200:
-                for n in nodes_response.json().get('data', []):
-                    node = n['node']
-                    break
-        
+            # NS: pick an online node, not just the first one
+            try:
+                nodes_resp = manager._api_get(f"https://{host}:8006/api2/json/nodes")
+                if nodes_resp.status_code == 200:
+                    for n in nodes_resp.json().get('data', []):
+                        if n.get('status') == 'online':
+                            node = n['node']
+                            break
+                    # fallback: first node if none reported online
+                    if not node:
+                        ndata = nodes_resp.json().get('data', [])
+                        if ndata:
+                            node = ndata[0]['node']
+            except Exception as e:
+                logging.warning(f"Node lookup for upload failed: {e}")
+
         if not node:
             return jsonify({'error': 'No node available'}), 400
-        
+
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
-        
+
         file = request.files['file']
         if not file.filename:
             return jsonify({'error': 'No file selected'}), 400
-        
+
         # MK: Mar 2026 - allow disk images alongside ISOs (#115)
         filename = file.filename
         _allowed_ext = {
@@ -713,37 +734,58 @@ def upload_to_datastore(cluster_id, storage_name):
         allowed = _allowed_ext.get(content_type)
         if allowed and not filename.lower().endswith(allowed):
             return jsonify({'error': f'Invalid file type. Allowed: {", ".join(allowed)}'}), 400
-        
-        # Upload to Proxmox
-        upload_url = f"https://{host}:8006/api2/json/nodes/{node}/storage/{storage_name}/upload"
-        file.stream.seek(0)  # MK: Mar 2026 - reset after Flask form parsing (#119)
 
-        files = {
-            'filename': (filename, file.stream, 'application/octet-stream')
-        }
-        data = {
-            'content': content_type
-        }
-        
-        # NS: Feb 2026 - large files (ISOs) need a long timeout, 10s was way too short (#82)
-        response = manager._create_session().post(upload_url, files=files, data=data, timeout=3600)
-        
+        # NS: Mar 2026 - save to temp file first, SpooledTemporaryFile + requests is unreliable
+        # across werkzeug versions. Temp file is cleaned up in finally block.
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(suffix=os.path.splitext(filename)[1])
+        try:
+            file.save(tmp_path)
+        except Exception as e:
+            os.close(fd)
+            raise
+        else:
+            os.close(fd)
+
+        upload_url = f"https://{host}:8006/api2/json/nodes/{node}/storage/{storage_name}/upload"
+
+        with open(tmp_path, 'rb') as fh:
+            files = {
+                'filename': (filename, fh, 'application/octet-stream')
+            }
+            data = {
+                'content': content_type
+            }
+            # NS: use _api_post for auto-reconnect tracking, 1h timeout for large ISOs
+            response = manager._api_post(upload_url, files=files, data=data, timeout=3600)
+
         if response.status_code == 200:
             result = response.json()
             user = request.session.get('user', 'unknown')
             log_audit(user, 'storage.upload', f"Uploaded {filename} to {storage_name}", cluster=manager.config.name)
             return jsonify({
-                'success': True, 
+                'success': True,
                 'message': f'Upload started: {filename}',
                 'upid': result.get('data')
             })
         else:
-            error_msg = response.json().get('errors', response.text) if response.text else 'Upload failed'
+            # MK: Mar 2026 - safe error parsing, Proxmox sometimes returns HTML on 5xx
+            try:
+                error_msg = response.json().get('errors', response.text)
+            except Exception:
+                error_msg = response.text[:500] if response.text else 'Upload failed'
+            logging.error(f"Upload to {storage_name} failed: HTTP {response.status_code} - {error_msg}")
             return jsonify({'error': error_msg}), response.status_code
-            
+
     except Exception as e:
-        logging.error(f"Error uploading: {e}")
+        logging.error(f"Error uploading to {storage_name}: {e}")
         return jsonify({'error': safe_error(e, 'Failed to upload to datastore')}), 500
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 
 # NS: Download ISO from URL - Jan 2026
