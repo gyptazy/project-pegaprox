@@ -6451,6 +6451,8 @@
                         { label: t('bulkMigration') || 'Bulk Migration', icon: <Icons.ArrowRight className="w-3.5 h-3.5" />, onClick: () => { setSelectedCluster(cluster); setActiveTab('resources'); setResourcesSubTab('management'); } },
                         { separator: true },
                         { label: t('refreshData') || 'Refresh', icon: <Icons.RefreshCw className="w-3.5 h-3.5" />, onClick: () => { fetchSidebarClusterData(cluster.id); if (selectedCluster?.id === cluster.id) { fetchClusterMetrics(cluster.id); fetchClusterResources(cluster.id); } } },
+                        { separator: true },
+                        { label: t('deleteCluster') || 'Remove Cluster', icon: <Icons.Trash className="w-3.5 h-3.5" />, danger: true, onClick: () => handleDeleteCluster(cluster.id) },
                     ];
                 }
 
@@ -7762,6 +7764,9 @@
                                                             <button onClick={() => { setRenamingCluster(selectedCluster); setRenameValue(selectedCluster.display_name || selectedCluster.name || ''); }} className="corp-rename-btn" title={t('renameCluster') || 'Rename'} style={{background:'none', border:'none', cursor:'pointer', padding:'2px', color:'var(--corp-text-muted)', display:'inline-flex', alignItems:'center'}}>
                                                                 <Icons.Edit className="w-3 h-3" />
                                                             </button>
+                                                            {isAdmin && <button onClick={() => handleDeleteCluster(selectedCluster.id)} title={t('deleteCluster') || 'Remove Cluster'} style={{background:'none', border:'none', cursor:'pointer', padding:'2px', color:'var(--corp-text-muted)', display:'inline-flex', alignItems:'center'}} onMouseEnter={(e) => e.currentTarget.style.color='#f54f47'} onMouseLeave={(e) => e.currentTarget.style.color='var(--corp-text-muted)'}>
+                                                                <Icons.Trash className="w-3 h-3" />
+                                                            </button>}
                                                             <span className="corp-badge" style={selectedCluster.connected
                                                                 ? {background: 'rgba(96,181,21,0.15)', color: '#60b515', border: '1px solid rgba(96,181,21,0.3)'}
                                                                 : {background: 'rgba(245,79,71,0.15)', color: '#f54f47', border: '1px solid rgba(245,79,71,0.3)'}
