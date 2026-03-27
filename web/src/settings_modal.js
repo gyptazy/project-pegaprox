@@ -5,7 +5,7 @@
         // PegaProx Settings Modal with User Management and Audit Log
         function PegaProxSettingsModal({ isOpen, onClose, addToast, onGroupsChanged }) {
             const { t } = useTranslation();
-            const { getAuthHeaders, user: currentUser } = useAuth();
+            const { getAuthHeaders, user: currentUser, setGravatarEnabled } = useAuth();
             const { isCorporate } = useLayout(); // LW: Feb 2026 - Corporate styling
             const [activeTab, setActiveTab] = useState('users');
             const [users, setUsers] = useState([]);
@@ -130,6 +130,7 @@
                 cert_info: null,
                 reverse_proxy_enabled: false,
                 trusted_proxies: '',
+                gravatar_enabled: true,
                 logo_url: '',
                 app_name: 'PegaProx',
                 default_theme: 'proxmoxDark',  // NS: Default theme for new users - Jan 2026
@@ -920,6 +921,7 @@
                             http_redirect_port: data.http_redirect_port || 0,
                             reverse_proxy_enabled: data.reverse_proxy_enabled || false,
                             trusted_proxies: data.trusted_proxies || '',
+                            gravatar_enabled: data.gravatar_enabled !== false,
                             default_theme: data.default_theme || 'proxmoxDark',
                             login_background: data.login_background || '',
                             // SMTP settings
@@ -1128,6 +1130,7 @@
                     formData.append('ssl_enabled', serverSettings.ssl_enabled);
                     formData.append('reverse_proxy_enabled', serverSettings.reverse_proxy_enabled);
                     formData.append('trusted_proxies', serverSettings.trusted_proxies || '');
+                    formData.append('gravatar_enabled', serverSettings.gravatar_enabled !== false);
                     formData.append('default_theme', serverSettings.default_theme || 'proxmoxDark');
                     // NS: alert recipients live in the same tab - must send them too (#131)
                     formData.append('alert_email_recipients', JSON.stringify(serverSettings.alert_email_recipients || []));
@@ -1168,6 +1171,32 @@
                     addToast(t('errorSavingSettings'), 'error');
                 }
                 setServerLoading(false);
+            };
+
+            const handleSaveUserManagementSettings = async () => {
+                setLoading(true);
+                try {
+                    const response = await fetch(`${API_URL}/settings/server`, {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                        body: JSON.stringify({
+                            gravatar_enabled: serverSettings.gravatar_enabled
+                        })
+                    });
+
+                    if (response && response.ok) {
+                        setGravatarEnabled(serverSettings.gravatar_enabled !== false);
+                        addToast(t('userManagementSettingsSaved') || 'User management settings saved', 'success');
+                        fetchServerSettings();
+                    } else {
+                        const err = await response.json().catch(() => ({}));
+                        addToast(err.error || t('errorSavingSettings'), 'error');
+                    }
+                } catch (err) {
+                    addToast(t('errorSavingSettings'), 'error');
+                }
+                setLoading(false);
             };
             
             const handleCertFileChange = (e, type) => {
@@ -1838,6 +1867,39 @@
                         <div className={`flex-1 overflow-auto ${isCorporate ? 'p-4' : 'p-6'}`}>
                             {activeTab === 'users' && (
                                 <div className="space-y-4">
+                                    <div className="bg-proxmox-dark border border-proxmox-border rounded-xl p-4">
+                                        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                                            <div>
+                                                <h3 className="text-lg font-semibold text-white">{t('userManagementSettings') || 'User Management Settings'}</h3>
+                                                <p className="text-sm text-gray-400 mt-1">
+                                                    {t('gravatarSettingHint') || 'Use Gravatar images for user avatars when an email address is available.'}
+                                                </p>
+                                            </div>
+                                            <button
+                                                onClick={handleSaveUserManagementSettings}
+                                                disabled={loading}
+                                                className="px-4 py-2 bg-proxmox-orange hover:bg-orange-600 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                                            >
+                                                {t('saveSettings')}
+                                            </button>
+                                        </div>
+
+                                        <label className="mt-4 flex items-start gap-3 cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={serverSettings.gravatar_enabled !== false}
+                                                onChange={e => setServerSettings({ ...serverSettings, gravatar_enabled: e.target.checked })}
+                                                className="mt-1"
+                                            />
+                                            <div>
+                                                <div className="text-sm font-medium text-white">{t('enableGravatar') || 'Enable Gravatar'}</div>
+                                                <div className="text-xs text-gray-500 mt-1">
+                                                    {t('gravatarSettingPrivacyHint') || 'When enabled, avatar images are loaded from Gravatar based on each user email address.'}
+                                                </div>
+                                            </div>
+                                        </label>
+                                    </div>
+
                                     {/* Add User Button */}
                                     <div className="flex justify-between items-center">
                                         <h3 className="text-lg font-semibold text-white">{t('users')}</h3>
@@ -1991,7 +2053,22 @@
                                                     <tr key={user.username} className="border-b border-gray-700/50 hover:bg-proxmox-hover">
                                                         <td className="px-4 py-3">
                                                             <div className="flex items-center gap-2">
-                                                                <div className="w-8 h-8 rounded-full bg-proxmox-orange/20 flex items-center justify-center text-proxmox-orange text-sm font-semibold">
+                                                                {serverSettings.gravatar_enabled !== false && getGravatarUrl(user.email) ? (
+                                                                    <img
+                                                                        src={getGravatarUrl(user.email)}
+                                                                        alt={user.username}
+                                                                        className="w-8 h-8 rounded-full object-cover bg-proxmox-orange/10"
+                                                                        onError={(e) => {
+                                                                            e.currentTarget.style.display = 'none';
+                                                                            const fallback = e.currentTarget.nextElementSibling;
+                                                                            if (fallback) fallback.style.display = 'flex';
+                                                                        }}
+                                                                    />
+                                                                ) : null}
+                                                                <div
+                                                                    className="w-8 h-8 rounded-full bg-proxmox-orange/20 flex items-center justify-center text-proxmox-orange text-sm font-semibold"
+                                                                    style={{ display: serverSettings.gravatar_enabled !== false && getGravatarUrl(user.email) ? 'none' : 'flex' }}
+                                                                >
                                                                     {user.username[0].toUpperCase()}
                                                                 </div>
                                                                 <span className="text-white font-medium">{user.username}</span>
@@ -5923,4 +6000,3 @@
                 </>
             );
         }
-

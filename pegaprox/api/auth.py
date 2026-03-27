@@ -611,6 +611,7 @@ def auth_login():
         },
         'session_id': session_id,
         'default_theme': default_theme,  # NS: Include for frontend fallback
+        'gravatar_enabled': settings.get('gravatar_enabled', True),
         'reverse_proxy_enabled': settings.get('reverse_proxy_enabled', False),
         'requires_2fa_setup': requires_2fa_setup,  # NS: Feb 2026 - Force 2FA
         # NS: Security warning if using default password
@@ -777,6 +778,7 @@ def auth_check():
         },
         'password_expiry': password_expiry,
         'requires_2fa_setup': requires_2fa_setup,
+        'gravatar_enabled': settings.get('gravatar_enabled', True),
         'reverse_proxy_enabled': settings.get('reverse_proxy_enabled', False),
         'default_theme': default_theme
     })

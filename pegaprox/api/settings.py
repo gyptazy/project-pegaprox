@@ -1091,6 +1091,8 @@ def update_server_settings():
                 ]
                 if data['default_theme'] in allowed_themes:
                     settings['default_theme'] = data['default_theme']
+            if 'gravatar_enabled' in data:
+                settings['gravatar_enabled'] = bool(data['gravatar_enabled'])
             
             # LW: Feb 2026 - LDAP/Active Directory settings
             ldap_keys = {
@@ -1252,6 +1254,7 @@ def update_server_settings():
             settings['ssl_enabled'] = ssl_enabled
             settings['reverse_proxy_enabled'] = reverse_proxy
             settings['trusted_proxies'] = trusted_proxies
+            settings['gravatar_enabled'] = request.form.get('gravatar_enabled', 'true').lower() == 'true'
             # hot-reload trusted proxies
             from pegaprox.utils.audit import load_trusted_proxies
             load_trusted_proxies(trusted_proxies)
@@ -4162,6 +4165,5 @@ def test_ldap():
         results['steps'].append({'step': failed_step, 'status': 'error', 'detail': str(e)})
     
     return jsonify(results)
-
 
 

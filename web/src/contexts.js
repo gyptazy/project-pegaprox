@@ -98,6 +98,7 @@
             const [oidcEnabled, setOidcEnabled] = useState(false);  // NS: Feb 2026 - OIDC available
             const [oidcButtonText, setOidcButtonText] = useState('Sign in with Microsoft');
             const [loginBackground, setLoginBackground] = useState('');
+            const [gravatarEnabled, setGravatarEnabled] = useState(true);
             const [reverseProxyEnabled, setReverseProxyEnabled] = useState(false);
             
             // Check session on mount
@@ -136,6 +137,9 @@
                                 setRequires2FASetup(true);
                             } else {
                                 setRequires2FASetup(false);
+                            }
+                            if (d.gravatar_enabled !== undefined) {
+                                setGravatarEnabled(d.gravatar_enabled);
                             }
                             // NS: Mar 2026 - apply user's saved language (server overrides local)
                             if (d.user?.language && translations[d.user.language]) {
@@ -208,6 +212,9 @@
                         // NS: Feb 2026 - Check if force 2FA setup is required
                         if (data.requires_2fa_setup) {
                             setRequires2FASetup(true);
+                        }
+                        if (data.gravatar_enabled !== undefined) {
+                            setGravatarEnabled(data.gravatar_enabled);
                         }
                         // NS: Mar 2026 - apply user's saved language on login
                         if (data.user?.language && translations[data.user.language]) {
@@ -301,6 +308,7 @@
                 setUser(null);
                 setSessionId(null);
                 setIsAuthenticated(false);
+                setGravatarEnabled(true);
             };
             
             // NS: No more X-Session-ID header needed for fetch - cookies are automatic
@@ -310,7 +318,7 @@
             };
             
             return(
-                <AuthContext.Provider value={{ user, sessionId, isAuthenticated, loading, error, login, logout, getAuthHeaders, isAdmin: user?.role === 'admin', passwordExpiry, requires2FASetup, setRequires2FASetup, updatePreferences, ldapEnabled, oidcEnabled, oidcButtonText, loginBackground, reverseProxyEnabled }}>
+                <AuthContext.Provider value={{ user, sessionId, isAuthenticated, loading, error, login, logout, getAuthHeaders, isAdmin: user?.role === 'admin', passwordExpiry, requires2FASetup, setRequires2FASetup, updatePreferences, ldapEnabled, oidcEnabled, oidcButtonText, loginBackground, gravatarEnabled, setGravatarEnabled, reverseProxyEnabled }}>
                     {children}
                 </AuthContext.Provider>
             );

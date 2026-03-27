@@ -86,6 +86,7 @@
         "static/css/xterm.min.css",
         "static/js/babel.min.js",
         "static/js/chart.umd.min.js",
+        "static/js/md5.min.js",
         "static/js/novnc/core/base64.js",
         "static/js/novnc/core/decoders/copyrect.js",
         "static/js/novnc/core/decoders/hextile.js",

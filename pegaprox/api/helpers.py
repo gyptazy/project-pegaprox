@@ -115,6 +115,7 @@ def load_server_settings():
         'oidc_auto_create_users': True,
         'oidc_button_text': 'Sign in with Microsoft',
         'oidc_group_mappings': [],
+        'gravatar_enabled': True,
     }
     
     try:

@@ -2,6 +2,12 @@
         // PegaProx - Dashboard & App
         // TaskBar, Dashboard, App component, ReactDOM.render
         // ═══════════════════════════════════════════════
+        // Gravatar Support
+        function getGravatarUrl(email) {
+            if (!email || typeof email !== 'string' || typeof window.md5 !== 'function') return null;
+            const hash = window.md5(email.trim().toLowerCase());
+            return `https://www.gravatar.com/avatar/${hash}?s=64&d=identicon`;
+        }
         // Task Bar Component with Task Viewer
         function TaskBar({ tasks, onClear, onClose, onCancel, onRefresh, clusterId, autoExpandEnabled = true }) {
             const { t } = useTranslation();
@@ -2120,7 +2126,7 @@
 
         function PegaProxDashboard() {
             const { t } = useTranslation();
-            const { user, sessionId, logout, getAuthHeaders, isAdmin, passwordExpiry } = useAuth();
+            const { user, sessionId, logout, getAuthHeaders, isAdmin, passwordExpiry, gravatarEnabled } = useAuth();
             const { isCorporate } = useLayout(); // LW: Feb 2026 - corporate layout
             const [clusters, setClusters] = useState([]);
             const [clusterGroups, setClusterGroups] = useState([]); // NS Jan 2026 - for grouping
@@ -2158,6 +2164,13 @@
             const [tasks, setTasks] = useState([]);
             const [showUpdateNotification, setShowUpdateNotification] = useState(false); // LW: Show update modal on login
             const [pendingUpdate, setPendingUpdate] = useState(null); // LW: Store update info for notification
+            const [avatarImageFailed, setAvatarImageFailed] = useState(false);
+            const avatarUrl = getGravatarUrl(user?.email);
+            const showGravatar = gravatarEnabled && !!avatarUrl && !avatarImageFailed;
+
+            useEffect(() => {
+                setAvatarImageFailed(false);
+            }, [avatarUrl]);
             
             const [balanceRunning, setBalanceRunning] = useState(false);
             const [srProgress, setSrProgress] = useState(null);
@@ -7015,25 +7028,41 @@
                                             )}
                                         </div>
                                     )}
-                                    
+
                                     {/* Task Bar Toggle - disabled for debugging */}
                                     {false && !showTaskBar && tasks.length > 0 && (
                                         <button
-                                            onClick={() => setShowTaskBar(true)}
-                                            className="relative flex items-center gap-2 px-3 py-2 bg-proxmox-dark border border-proxmox-border rounded-lg hover:border-proxmox-orange/50 transition-colors"
-                                            title={t('tasks')}
+                                        onClick={() => setShowUserMenu(!showUserMenu)}
+                                        className={`flex items-center gap-2 ${
+                                            isCorporate ? 'px-2 py-1' : 'px-3 py-2'
+                                        } bg-proxmox-dark border border-proxmox-border rounded-lg hover:border-proxmox-orange/50 transition-colors`}
                                         >
-                                            <Icons.Layers />
-                                            {tasks.filter(task => task && task.status === 'running').length > 0 && (
-                                                <span className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 rounded-full text-xs flex items-center justify-center animate-pulse">
-                                                    {tasks.filter(task => task && task.status === 'running').length}
-                                                </span>
-                                            )}
-                                            {tasks.filter(task => task && (task.status === 'failed' || task.status === 'error')).length > 0 && (
-                                                <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full text-xs flex items-center justify-center">
-                                                    {tasks.filter(task => task && (task.status === 'failed' || task.status === 'error')).length}
-                                                </span>
-                                            )}
+                                        {showGravatar ? (
+                                            <img
+                                            src={avatarUrl}
+                                            alt={user?.username}
+                                            className={`${
+                                                isCorporate ? 'w-6 h-6' : 'w-8 h-8'
+                                            } rounded-full object-cover bg-proxmox-orange/10`}
+                                            onError={(e) => {
+                                                setAvatarImageFailed(true);
+                                            }}
+                                            />
+                                        ) : (
+                                            <div
+                                            className={`${
+                                                isCorporate ? 'w-6 h-6 text-[11px]' : 'w-8 h-8'
+                                            } rounded-full bg-proxmox-orange/20 flex items-center justify-center text-proxmox-orange font-semibold`}
+                                            >
+                                            {user?.username?.[0]?.toUpperCase() || 'U'}
+                                            </div>
+                                        )}
+
+                                        {!isCorporate && (
+                                            <span className="text-sm text-gray-300 hidden sm:inline">
+                                            {user?.display_name || user?.username}
+                                            </span>
+                                        )}
                                         </button>
                                     )}
                                     
@@ -7043,9 +7072,20 @@
                                             onClick={() => setShowUserMenu(!showUserMenu)}
                                             className={`flex items-center gap-2 ${isCorporate ? 'px-2 py-1' : 'px-3 py-2'} bg-proxmox-dark border border-proxmox-border rounded-lg hover:border-proxmox-orange/50 transition-colors`}
                                         >
-                                            <div className={`${isCorporate ? 'w-6 h-6 text-[11px]' : 'w-8 h-8'} rounded-full bg-proxmox-orange/20 flex items-center justify-center text-proxmox-orange font-semibold`}>
-                                                {user?.username?.[0]?.toUpperCase() || 'U'}
-                                            </div>
+                                            {showGravatar ? (
+                                                <img
+                                                    src={avatarUrl}
+                                                    alt={user?.username}
+                                                    className={`${isCorporate ? 'w-6 h-6' : 'w-8 h-8'} rounded-full object-cover bg-proxmox-orange/10`}
+                                                    onError={(e) => {
+                                                        setAvatarImageFailed(true);
+                                                    }}
+                                                />
+                                            ) : (
+                                                <div className={`${isCorporate ? 'w-6 h-6 text-[11px]' : 'w-8 h-8'} rounded-full bg-proxmox-orange/20 flex items-center justify-center text-proxmox-orange font-semibold`}>
+                                                    {user?.username?.[0]?.toUpperCase() || 'U'}
+                                                </div>
+                                            )}
                                             {!isCorporate && <span className="text-sm text-gray-300 hidden sm:inline">{user?.display_name || user?.username}</span>}
                                             <Icons.ChevronDown className={isCorporate ? 'w-3 h-3' : undefined} />
                                         </button>

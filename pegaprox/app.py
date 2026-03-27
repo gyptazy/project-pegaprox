@@ -182,7 +182,7 @@ def create_app():
             "style-src 'self' 'unsafe-inline' "
                 "https://fonts.googleapis.com https://cdn.jsdelivr.net; "
             "font-src 'self' data: https://fonts.gstatic.com https://fonts.googleapis.com; "
-            "img-src 'self' data: blob:; "
+            "img-src 'self' data: blob: https://www.gravatar.com https://secure.gravatar.com; "
             "connect-src 'self' wss: ws: https://cdn.jsdelivr.net; "
             "frame-ancestors 'none'; "
             "base-uri 'self'; "
@@ -250,6 +250,7 @@ def download_static_files():
             ('react-dom.production.min.js', 'https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js'),
             ('babel.min.js', 'https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js'),
             ('chart.umd.min.js', 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js'),
+            ('md5.min.js', 'https://cdn.jsdelivr.net/npm/blueimp-md5@2.19.0/js/md5.min.js'),
             ('xterm.min.js', 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js'),
             ('xterm-addon-fit.min.js', 'https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js'),
         ],

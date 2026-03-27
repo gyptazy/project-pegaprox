@@ -164,6 +164,11 @@
                 lastLogin: 'Letzte Anmeldung',
                 never: 'Nie',
                 profile: 'Profil',
+                userManagementSettings: 'Benutzerverwaltungs-Einstellungen',
+                userManagementSettingsSaved: 'Benutzerverwaltungs-Einstellungen gespeichert',
+                enableGravatar: 'Gravatar aktivieren',
+                gravatarSettingHint: 'Verwendet Gravatar-Bilder fur Benutzer-Avatare, wenn eine E-Mail-Adresse vorhanden ist.',
+                gravatarSettingPrivacyHint: 'Wenn aktiviert, werden Avatar-Bilder anhand der E-Mail-Adresse des Benutzers von Gravatar geladen.',
                 
                 // PegaProx Settings
                 pegaproxSettings: 'PegaProx Einstellungen',
@@ -3165,6 +3170,11 @@
                 lastLogin: 'Last Login',
                 never: 'Never',
                 profile: 'Profile',
+                userManagementSettings: 'User Management Settings',
+                userManagementSettingsSaved: 'User management settings saved',
+                enableGravatar: 'Enable Gravatar',
+                gravatarSettingHint: 'Use Gravatar images for user avatars when an email address is available.',
+                gravatarSettingPrivacyHint: 'When enabled, avatar images are loaded from Gravatar based on each user email address.',
                 
                 // PegaProx Settings
                 pegaproxSettings: 'PegaProx Settings',
@@ -6164,6 +6174,11 @@
                 lastLogin: 'Dernière connexion',
                 never: 'Jamais',
                 profile: 'Profil',
+                userManagementSettings: 'Parametres de gestion des utilisateurs',
+                userManagementSettingsSaved: 'Parametres de gestion des utilisateurs enregistres',
+                enableGravatar: 'Activer Gravatar',
+                gravatarSettingHint: 'Utilise les images Gravatar pour les avatars utilisateur lorsqu\'une adresse e-mail est disponible.',
+                gravatarSettingPrivacyHint: 'Lorsque cette option est activee, les avatars sont charges depuis Gravatar a partir de l\'adresse e-mail de chaque utilisateur.',
         
                 // PegaProx Settings
                 pegaproxSettings: 'Paramètres de PegaProx',
@@ -9002,6 +9017,11 @@
                 lastLogin: 'Último ingreso',
                 never: 'Nunca',
                 profile: 'Perfil',
+                userManagementSettings: 'Ajustes de gestion de usuarios',
+                userManagementSettingsSaved: 'Ajustes de gestion de usuarios guardados',
+                enableGravatar: 'Activar Gravatar',
+                gravatarSettingHint: 'Usa imagenes de Gravatar para los avatares de usuario cuando haya una direccion de correo disponible.',
+                gravatarSettingPrivacyHint: 'Cuando esta activado, las imagenes del avatar se cargan desde Gravatar usando la direccion de correo de cada usuario.',
                 
                 // PegaProx Settings / Valores de PegaProx
                 pegaproxSettings: 'Valores de PegaProx',
@@ -11648,6 +11668,11 @@
                 lastLogin: 'Último Login',
                 never: 'Nunca',
                 profile: 'Perfil',
+                userManagementSettings: 'Configuracoes de gerenciamento de usuarios',
+                userManagementSettingsSaved: 'Configuracoes de gerenciamento de usuarios salvas',
+                enableGravatar: 'Ativar Gravatar',
+                gravatarSettingHint: 'Usa imagens do Gravatar para avatares de usuarios quando houver um endereco de e-mail disponivel.',
+                gravatarSettingPrivacyHint: 'Quando ativado, as imagens de avatar sao carregadas do Gravatar com base no endereco de e-mail de cada usuario.',
                 
                 // PegaProx Settings
                 pegaproxSettings: 'Configurações do PegaProx',
@@ -14279,4 +14304,3 @@
                 lynPwHistoryImpact: 'Usuários não podem reutilizar senhas recentes',
             },
         };
-
