@@ -30,6 +30,7 @@ from pegaprox.utils.rbac import (
     DEFAULT_TENANT_ID, ROLE_TEMPLATES,
 )
 from pegaprox.api.helpers import load_server_settings, save_server_settings, get_login_settings, check_cluster_access, safe_error
+from pegaprox.utils.sanitization import sanitize_username, validate_email
 
 bp = Blueprint('users', __name__)
 
@@ -568,7 +569,9 @@ def create_user():
     global users_db
     
     data = request.get_json()
-    username = data.get('username', '').strip().lower()
+    input_username = data.get('username', '')
+    raw_username = input_username.strip().lower()
+    username = sanitize_username(raw_username, max_length=64)
     password = data.get('password', '')
     role = data.get('role', ROLE_USER)
     display_name = data.get('display_name', username)
@@ -579,6 +582,12 @@ def create_user():
     
     if not username or not password:
         return jsonify({'error': 'Username and password required'}), 400
+
+    if username != raw_username:
+        return jsonify({'error': 'Username contains invalid characters'}), 400
+
+    if '@' in username and not validate_email(username):
+        return jsonify({'error': 'Username must be a valid email address'}), 400
     
     if len(username) < 3:
         return jsonify({'error': 'Username must be at least 3 characters'}), 400
@@ -1624,4 +1633,3 @@ def rm_pool(cluster_id, pool_id):
     except:
         pass  # NS: not critical, orphaned perms don't hurt
     return jsonify({'success': True})
-

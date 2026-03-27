@@ -39,6 +39,16 @@ def sanitize_identifier(value: str, max_length: int = 64) -> str:
     return value[:max_length]
 
 
+def sanitize_username(value: str, max_length: int = 64) -> str:
+    """sanitize usernames while preserving common email-local-part characters"""
+    if not isinstance(value, str):
+        value = str(value) if value is not None else ''
+
+    value = re.sub(r'[^a-zA-Z0-9_@.+%-]', '', value)
+
+    return value[:max_length]
+
+
 def sanitize_int(value, default: int = 0, min_val: int = None, max_val: int = None) -> int:
     """Sanitize an integer input"""
     try:
@@ -80,5 +90,3 @@ def validate_hostname(hostname: str) -> bool:
     ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
     hostname_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
     return bool(re.match(ip_pattern, hostname) or re.match(hostname_pattern, hostname))
-
-

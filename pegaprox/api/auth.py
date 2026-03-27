@@ -30,10 +30,11 @@ from pegaprox.utils.oidc import (
     get_oidc_settings, get_oidc_endpoints, oidc_build_auth_url,
     oidc_exchange_code, oidc_decode_id_token, oidc_get_user_info,
     oidc_get_user_groups, oidc_map_groups_to_role, oidc_provision_user,
+    get_oidc_username,
 )
 from pegaprox.utils.rbac import get_user_permissions, DEFAULT_TENANT_ID
 from pegaprox.api.helpers import load_server_settings, save_server_settings, get_login_settings, get_session_timeout, safe_error
-from pegaprox.utils.sanitization import sanitize_identifier
+from pegaprox.utils.sanitization import sanitize_identifier, sanitize_username, validate_email
 from pegaprox.utils.ssh import check_auth_action_rate_limit
 # NS: Mar 2026 - removed add_allowed_origin import (no longer auto-adding on login)
 import requests
@@ -183,12 +184,7 @@ def oidc_callback():
         # Check if user already exists
         # MK: this has to match the logic in oidc_provision_user or we get mismatches
         # (had a bug where "john.doe" here vs "johndoe" in provision caused 403s)
-        email = user_info.get('email') or user_info.get('preferred_username', '')
-        raw_username = user_info.get('preferred_username') or email
-        check_username = raw_username.split('@')[0].lower() if '@' in raw_username else raw_username.lower()
-        check_username = ''.join(c for c in check_username if c.isalnum() or c in '._-')
-        if not check_username:
-            check_username = f"oidc_{user_info.get('sub', 'unknown')[:12]}"
+        check_username = get_oidc_username(user_info)
         users = load_users()
         if check_username not in users:
             return jsonify({'error': 'User account does not exist. Contact an administrator.'}), 403
@@ -354,8 +350,9 @@ def auth_login():
     if not data:
         return jsonify({'error': 'Invalid request body'}), 400
     
-    # sanitize inputs (security stuff)
-    username = sanitize_identifier(data.get('username', '').strip().lower(), max_length=64)
+    input_username = data.get('username', '')
+    normalized_username = input_username.strip().lower()
+    username = sanitize_username(normalized_username, max_length=64)
     password = data.get('password', '')[:256]  # limit to prevent DoS
     totp_code = sanitize_identifier(data.get('totp_code', ''), max_length=10)
     
@@ -363,6 +360,12 @@ def auth_login():
     
     if not username or not password:
         return jsonify({'error': 'Username and password required'}), 400
+
+    if username != normalized_username:
+        return jsonify({'error': 'Username contains invalid characters'}), 400
+
+    if '@' in username and not validate_email(username):
+        return jsonify({'error': 'Username must be a valid email address'}), 400
     
     if len(username) < 2:
         return jsonify({'error': 'Username too short'}), 400

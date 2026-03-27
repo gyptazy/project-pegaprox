@@ -25,6 +25,7 @@ except ImportError:
 from pegaprox.core.db import get_db
 from pegaprox.globals import users_db
 from pegaprox.models.permissions import ROLE_VIEWER, ROLE_ADMIN, ROLE_USER
+from pegaprox.utils.sanitization import sanitize_username
 
 # ============================================================================
 
@@ -51,6 +52,18 @@ ENTRA_CLOUD_ENDPOINTS = {
         'graph_base': 'dod-graph.microsoft.us',
     },
 }
+
+
+def get_oidc_username(user_info: dict) -> str:
+    """Derive the canonical local username for an OIDC user."""
+    email = user_info.get('email') or user_info.get('preferred_username', '')
+    raw_username = (user_info.get('preferred_username') or email or '').strip().lower()
+    username = sanitize_username(raw_username, max_length=64)
+
+    if not username:
+        username = sanitize_username(f"oidc_{user_info.get('sub', 'unknown')[:12]}", max_length=64)
+
+    return username
 
 def get_oidc_settings() -> dict:
     """Load OIDC/Entra ID configuration from server settings
@@ -467,20 +480,8 @@ def oidc_provision_user(user_info: dict, role_mapping: dict, auth_source: str = 
     NS: JIT provisioning - same pattern as LDAP but for OIDC providers
     MK: username derived from email or preferred_username
     """
-    # Derive username from OIDC claims
     email = user_info.get('email') or user_info.get('preferred_username', '')
-    raw_username = user_info.get('preferred_username') or email
-    
-    # LW: Sanitize username - use part before @ for email-style usernames
-    if '@' in raw_username:
-        username = raw_username.split('@')[0].lower()
-    else:
-        username = raw_username.lower()
-    
-    # NS: Ensure we have a valid username
-    username = ''.join(c for c in username if c.isalnum() or c in '._-')
-    if not username:
-        username = f"oidc_{user_info.get('sub', 'unknown')[:12]}"
+    username = get_oidc_username(user_info)
     
     display_name = user_info.get('name') or user_info.get('given_name', '') 
     if not display_name:
