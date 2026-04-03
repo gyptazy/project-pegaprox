@@ -125,7 +125,7 @@ def get_reports_summary():
 
 
 @bp.route('/api/syslog/events', methods=['GET'])
-@require_auth(perms=['cluster.view'])
+@require_auth(perms=['admin.audit'])
 def get_integrated_syslog_events():
     """Paginated overview of events stored by the integrated syslog server."""
     try:
