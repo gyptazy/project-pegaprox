@@ -33,20 +33,15 @@ jobs:
               
               if (missing.length > 0 || body.length < 100) {
                 isInvalid = true;
-                message = `👋 Thanks for reporting a bug!
-
-Unfortunately, it looks like some required information is missing.
-
-**Please provide:**
-${missing.map(f => `- [ ] ${f.name}`).join('\n')}
-${body.length < 100 ? '- [ ] More details (current description is too short)' : ''}
-
-**Why?** 
-We're volunteers maintaining PegaProx in our free time. Complete bug reports help us fix issues faster. 🐾
-
-Closing for now — please reopen with the required details or open a new issue.
-
-*This is an automated message.*`;
+                const missingList = missing.map(f => '- [ ] ' + f.name).join('\n');
+                const shortNote = body.length < 100 ? '\n- [ ] More details (current description is too short)' : '';
+                message = '👋 Thanks for reporting a bug!\n\n' +
+                  'Unfortunately, it looks like some required information is missing.\n\n' +
+                  '**Please provide:**\n' + missingList + shortNote + '\n\n' +
+                  '**Why?**\nWe are volunteers maintaining PegaProx in our free time. ' +
+                  'Complete bug reports help us fix issues faster. 🐾\n\n' +
+                  'Closing for now — please reopen with the required details or open a new issue.\n\n' +
+                  '*This is an automated message.*';
               }
             }
             
@@ -54,22 +49,17 @@ Closing for now — please reopen with the required details or open a new issue.
             if (labels.includes('enhancement') || labels.includes('feature') || title.includes('[feature]')) {
               
               const hasDescription = body.length > 50;
-              const hasUseCase = /use case|why|problem|would like|should/i.test(body);
               
               if (!hasDescription) {
                 isInvalid = true;
-                message = `👋 Thanks for the feature request!
-
-Unfortunately, we need a bit more detail to understand your idea.
-
-**Please describe:**
-- [ ] What feature would you like?
-- [ ] Why? What problem does it solve?
-- [ ] Any ideas how it could work?
-
-Closing for now — please reopen with more details. 🐾
-
-*This is an automated message.*`;
+                message = '👋 Thanks for the feature request!\n\n' +
+                  'Unfortunately, we need a bit more detail to understand your idea.\n\n' +
+                  '**Please describe:**\n' +
+                  '- [ ] What feature would you like?\n' +
+                  '- [ ] Why? What problem does it solve?\n' +
+                  '- [ ] Any ideas how it could work?\n\n' +
+                  'Closing for now — please reopen with more details. 🐾\n\n' +
+                  '*This is an automated message.*';
               }
             }
             
