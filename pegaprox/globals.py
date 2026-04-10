@@ -108,6 +108,7 @@ _broadcast_thread = None
 _alert_thread = None
 _alert_running = False
 _alert_last_sent = {}
+_notification_handlers = []  # MK: Apr 2026 - plugins can register alert handlers here
 _password_expiry_thread = None
 _password_expiry_running = False
 _password_expiry_last_check = {}

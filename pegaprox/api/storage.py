@@ -2369,4 +2369,88 @@ def delete_backup_job(cluster_id, job_id):
 
 
 # ============================================
+# ISO/Template Sync — LW Apr 2026
+# ============================================
+
+@bp.route('/api/clusters/<cluster_id>/iso-sync/status', methods=['GET'])
+@require_auth(perms=['storage.view'])
+def iso_sync_status(cluster_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    if cluster_id not in cluster_managers:
+        return jsonify({'error': 'Cluster not found'}), 404
+    mgr = cluster_managers[cluster_id]
+    content_type = request.args.get('content', 'iso')
+    if content_type not in ('iso', 'vztmpl'):
+        return jsonify({'error': 'content must be iso or vztmpl'}), 400
+    return jsonify(mgr.get_content_sync_status(content_type))
+
+
+@bp.route('/api/clusters/<cluster_id>/iso-sync', methods=['POST'])
+@require_auth(perms=['storage.upload'])
+def iso_sync_trigger(cluster_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    if cluster_id not in cluster_managers:
+        return jsonify({'error': 'Cluster not found'}), 404
+    mgr = cluster_managers[cluster_id]
+    data = request.get_json() or {}
+    source = data.get('source_node')
+    storage = data.get('storage')
+    filename = data.get('filename')
+    content_type = data.get('content_type', 'iso')
+    targets = data.get('target_nodes')
+
+    if not all([source, storage, filename]):
+        return jsonify({'error': 'source_node, storage, filename required'}), 400
+
+    def _do_sync():
+        results = mgr.sync_content_to_nodes(source, storage, filename, content_type, targets)
+        logging.info(f"[SYNC] {filename}: {sum(1 for r in results if r.get('success'))} ok, {sum(1 for r in results if not r.get('success'))} failed")
+
+    threading.Thread(target=_do_sync, daemon=True, name=f'iso-sync-{filename}').start()
+    return jsonify({'success': True, 'message': f'Sync started for {filename}'})
+
+
+@bp.route('/api/clusters/<cluster_id>/iso-sync/all', methods=['POST'])
+@require_auth(perms=['storage.upload'])
+def iso_sync_all(cluster_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    if cluster_id not in cluster_managers:
+        return jsonify({'error': 'Cluster not found'}), 404
+    mgr = cluster_managers[cluster_id]
+    data = request.get_json() or {}
+    content_type = data.get('content_type', 'iso')
+
+    def _do_sync_all():
+        status = mgr.get_content_sync_status(content_type)
+        synced = 0
+        for key, node_map in status.get('matrix', {}).items():
+            src = next((n for n, has in node_map.items() if has), None)
+            if not src: continue
+            missing = [n for n, has in node_map.items() if not has]
+            if not missing: continue
+            parts = key.split(':', 1)
+            if len(parts) != 2: continue
+            stor, fname = parts
+            results = mgr.sync_content_to_nodes(src, stor, fname, content_type, missing)
+            synced += sum(1 for r in results if r.get('success'))
+        logging.info(f"[SYNC] Sync-all done: {synced} files distributed")
+
+    threading.Thread(target=_do_sync_all, daemon=True, name='iso-sync-all').start()
+    return jsonify({'success': True, 'message': 'Full sync started'})
+
+
+@bp.route('/api/clusters/<cluster_id>/iso-sync/last-result', methods=['GET'])
+@require_auth(perms=['storage.view'])
+def iso_sync_last_result(cluster_id):
+    """Get result of last sync operation for UI feedback"""
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    if cluster_id not in cluster_managers:
+        return jsonify({'error': 'Cluster not found'}), 404
+    mgr = cluster_managers[cluster_id]
+    result = getattr(mgr, '_sync_last_result', None)
+    return jsonify(result or {})
 

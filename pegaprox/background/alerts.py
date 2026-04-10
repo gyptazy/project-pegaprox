@@ -15,6 +15,7 @@ from datetime import datetime
 from pegaprox.constants import ALERTS_CONFIG_FILE
 from pegaprox.globals import (
     cluster_managers, _alert_running, _alert_last_sent, _alert_thread,
+    _notification_handlers,
 )
 from pegaprox.core.db import get_db
 from pegaprox.api.helpers import load_server_settings
@@ -202,6 +203,28 @@ This is an automated alert from PegaProx.
                 logging.info(f"Alert sent: {alert_name} ({metric}={current_value:.1f}%)")
             elif error:
                 logging.warning(f"Alert email failed: {error}")
+
+            # MK: dispatch to registered notification plugins (ntfy, apprise, etc.)
+            if _notification_handlers:
+                severity = 'critical' if current_value > 90 else 'warning' if current_value > 70 else 'info'
+                alert_data = {
+                    'alert_name': alert_name,
+                    'metric': metric,
+                    'operator': operator,
+                    'threshold': threshold,
+                    'current_value': round(current_value, 1),
+                    'target_type': target_type,
+                    'target_name': target_name,
+                    'cluster_id': cluster_id,
+                    'severity': severity,
+                    'timestamp': datetime.now().isoformat(),
+                    'message': f"{target_type.capitalize()} {target_name}: {metric} is {current_value:.1f}% (threshold: {operator} {threshold}%)",
+                }
+                for handler in _notification_handlers:
+                    try:
+                        handler(alert_data)
+                    except Exception as he:
+                        logging.debug(f"Notification handler error: {he}")
 
 
 # Alert check thread

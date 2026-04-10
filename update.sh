@@ -113,7 +113,7 @@ echo ""
 echo -e "${YELLOW}Updating...${NC}"
 
 # Create backup
-BACKUP_DIR="backups/backup_${CURRENT_VERSION}_$(date +%Y%m%d_%H%M%S)"
+BACKUP_DIR="${SCRIPT_DIR}/backups/backup_${CURRENT_VERSION}_$(date +%Y%m%d_%H%M%S)"
 echo -n "Creating backup in $BACKUP_DIR... "
 mkdir -p "$BACKUP_DIR"
 

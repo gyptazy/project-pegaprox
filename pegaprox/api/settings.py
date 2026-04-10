@@ -2561,7 +2561,10 @@ def get_compliance_status():
         # MK: each check is worth the same, simple but effective
         checks = {
             'encryption_enabled': ENCRYPTION_AVAILABLE and key_info.get('exists', False),
-            'https_enabled': os.path.exists(SSL_CERT_FILE) and os.path.exists(SSL_KEY_FILE),
+            # MK: Apr 2026 - behind reverse proxy, HTTPS is handled by the proxy (#281)
+            'https_enabled': os.path.exists(SSL_CERT_FILE) and os.path.exists(SSL_KEY_FILE)
+                or settings.get('reverse_proxy_enabled', False)
+                or request.headers.get('X-Forwarded-Proto') == 'https',
             'password_policy_enabled': settings.get('password_min_length', 8) >= 8,
             'session_timeout_compliant': settings.get('session_timeout', SESSION_TIMEOUT) <= 28800,  # 8h max for HIPAA
             '2fa_available': TOTP_AVAILABLE,
@@ -2597,7 +2600,7 @@ def get_compliance_status():
             },
             'recommendations': [
                 r for r in [
-                    None if checks['https_enabled'] else 'Enable HTTPS with valid certificates',
+                    None if checks['https_enabled'] else 'Enable HTTPS with valid certificates (or enable reverse proxy mode if using nginx/Traefik)',
                     None if checks['session_timeout_compliant'] else 'Reduce session timeout to 8 hours or less',
                     None if settings.get('password_require_special') else 'Consider requiring special characters in passwords',
                     None if settings.get('password_expiry_enabled') else 'Consider enabling password expiry',

@@ -123,7 +123,7 @@ def get_clusters():
                 'ha_enabled': mgr.config.ha_enabled,
                 'fallback_hosts': mgr.config.fallback_hosts,
                 'excluded_nodes': getattr(mgr.config, 'excluded_nodes', []),
-                'current_host': getattr(mgr, 'current_host', None),
+                'current_host': getattr(mgr, '_original_host', None) or getattr(mgr, 'current_host', None),
                 'last_run': mgr.last_run.isoformat() if mgr.last_run else None,
                 'api_token_active': bool(getattr(mgr, '_using_api_token', False)),
                 'cluster_type': getattr(mgr, 'cluster_type', 'proxmox'),

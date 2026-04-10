@@ -10702,16 +10702,20 @@
                                                             )}
                                                         </div>
 
-                                                        {/* MK: Score weight tuning */}
-                                                        <div className="pt-3 border-t border-gray-700/50">
-                                                            <h4 className="text-sm font-medium text-gray-400 mb-3 flex items-center gap-2">
+                                                        {/* LW: collapsible advanced LB settings */}
+                                                        <details className="pt-3 border-t border-gray-700/50 group">
+                                                            <summary className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-400 hover:text-gray-300 transition-colors list-none">
+                                                                <svg className="w-3.5 h-3.5 transition-transform group-open:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
                                                                 <Icons.Settings className="w-4 h-4" />
                                                                 {t('scoreWeights') || 'Score Weights'}
-                                                            </h4>
-                                                            <div className="text-xs text-gray-500 mb-3">
-                                                                {t('scoreWeightsDesc') || 'Adjust how CPU, RAM, and Disk I/O contribute to the balancing score. Default: CPU=1.0, RAM=1.0, IO=0.'}
-                                                            </div>
-                                                            <div className="space-y-2">
+                                                                <span className="text-xs text-gray-600 font-normal ml-1">
+                                                                    ({selectedCluster.balance_cpu_weight ?? 1.0}/{selectedCluster.balance_mem_weight ?? 1.0}/{selectedCluster.balance_io_weight ?? 0.0})
+                                                                </span>
+                                                            </summary>
+                                                            <div className="mt-3 ml-6 space-y-2">
+                                                                <div className="text-xs text-gray-500 mb-2">
+                                                                    {t('scoreWeightsDesc') || 'Adjust how CPU, RAM, and Disk I/O contribute to the balancing score.'}
+                                                                </div>
                                                                 <Slider label="CPU Weight" value={selectedCluster.balance_cpu_weight ?? 1.0}
                                                                     onChange={v => updateConfig('balance_cpu_weight', v)} min={0} max={2} step={0.1} unit="" />
                                                                 <Slider label="RAM Weight" value={selectedCluster.balance_mem_weight ?? 1.0}
@@ -10719,53 +10723,59 @@
                                                                 <Slider label="Disk I/O Weight" value={selectedCluster.balance_io_weight ?? 0.0}
                                                                     onChange={v => updateConfig('balance_io_weight', v)} min={0} max={2} step={0.1} unit="" />
                                                             </div>
-                                                        </div>
+                                                        </details>
 
-                                                        {/* CPU Baseline / EVC Mode */}
-                                                        <div className="pt-3 border-t border-gray-700/50">
-                                                            <h4 className="text-sm font-medium text-gray-400 mb-2 flex items-center gap-2">
+                                                        {/* CPU Baseline / EVC Mode — collapsible */}
+                                                        <details className="pt-3 border-t border-gray-700/50 group">
+                                                            <summary className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-400 hover:text-gray-300 transition-colors list-none">
+                                                                <svg className="w-3.5 h-3.5 transition-transform group-open:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
                                                                 <Icons.Cpu className="w-4 h-4" />
                                                                 {t('cpuBaseline') || 'CPU Baseline (EVC Mode)'}
-                                                            </h4>
-                                                            <div className="text-xs text-gray-500 mb-2">
-                                                                {t('cpuBaselineDesc') || 'Set a CPU compatibility baseline. VMs with a higher CPU type won\'t be auto-migrated. Similar to VMware EVC.'}
-                                                            </div>
-                                                            <select
-                                                                value={selectedCluster.cpu_baseline || 'none'}
-                                                                onChange={e => updateConfig('cpu_baseline', e.target.value === 'none' ? null : e.target.value)}
-                                                                className="w-full bg-proxmox-dark border border-proxmox-border rounded-lg px-3 py-2 text-sm text-white"
-                                                            >
-                                                                <option value="none">{t('cpuBaselineNone') || 'None (no restriction)'}</option>
-                                                                <optgroup label="Generic (Recommended)">
-                                                                    <option value="x86-64-v2">x86-64-v2</option>
-                                                                    <option value="x86-64-v2-AES">x86-64-v2-AES</option>
-                                                                    <option value="x86-64-v3">x86-64-v3</option>
-                                                                    <option value="x86-64-v4">x86-64-v4</option>
-                                                                </optgroup>
-                                                                <optgroup label="Intel">
-                                                                    <option value="Broadwell">Broadwell</option>
-                                                                    <option value="Skylake-Server">Skylake-Server</option>
-                                                                    <option value="Cascadelake-Server">Cascadelake-Server</option>
-                                                                    <option value="Icelake-Server">Icelake-Server</option>
-                                                                    <option value="SapphireRapids">SapphireRapids</option>
-                                                                </optgroup>
-                                                                <optgroup label="AMD">
-                                                                    <option value="EPYC">EPYC (Naples)</option>
-                                                                    <option value="EPYC-Rome">EPYC-Rome</option>
-                                                                    <option value="EPYC-Milan">EPYC-Milan</option>
-                                                                </optgroup>
-                                                            </select>
-                                                            {selectedCluster.cpu_baseline && selectedCluster.cpu_baseline !== 'none' && (
-                                                                <div className="mt-2 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-                                                                    <div className="flex items-start gap-2">
-                                                                        <span className="text-blue-400">🔒</span>
-                                                                        <div className="text-xs text-blue-200">
-                                                                            {t('cpuBaselineActive') || `Baseline active: VMs with CPU type above "${selectedCluster.cpu_baseline}" will not be auto-migrated. VMs using "cpu: host" are checked for vendor compatibility.`}
+                                                                {selectedCluster.cpu_baseline && selectedCluster.cpu_baseline !== 'none' && (
+                                                                    <span className="text-xs bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded font-normal">{selectedCluster.cpu_baseline}</span>
+                                                                )}
+                                                            </summary>
+                                                            <div className="mt-3 ml-6">
+                                                                <div className="text-xs text-gray-500 mb-2">
+                                                                    {t('cpuBaselineDesc') || 'Set a CPU compatibility baseline. VMs with a higher CPU type won\'t be auto-migrated. Similar to VMware EVC.'}
+                                                                </div>
+                                                                <select
+                                                                    value={selectedCluster.cpu_baseline || 'none'}
+                                                                    onChange={e => updateConfig('cpu_baseline', e.target.value === 'none' ? null : e.target.value)}
+                                                                    className="w-full bg-proxmox-dark border border-proxmox-border rounded-lg px-3 py-2 text-sm text-white"
+                                                                >
+                                                                    <option value="none">{t('cpuBaselineNone') || 'None (no restriction)'}</option>
+                                                                    <optgroup label="Generic (Recommended)">
+                                                                        <option value="x86-64-v2">x86-64-v2</option>
+                                                                        <option value="x86-64-v2-AES">x86-64-v2-AES</option>
+                                                                        <option value="x86-64-v3">x86-64-v3</option>
+                                                                        <option value="x86-64-v4">x86-64-v4</option>
+                                                                    </optgroup>
+                                                                    <optgroup label="Intel">
+                                                                        <option value="Broadwell">Broadwell</option>
+                                                                        <option value="Skylake-Server">Skylake-Server</option>
+                                                                        <option value="Cascadelake-Server">Cascadelake-Server</option>
+                                                                        <option value="Icelake-Server">Icelake-Server</option>
+                                                                        <option value="SapphireRapids">SapphireRapids</option>
+                                                                    </optgroup>
+                                                                    <optgroup label="AMD">
+                                                                        <option value="EPYC">EPYC (Naples)</option>
+                                                                        <option value="EPYC-Rome">EPYC-Rome</option>
+                                                                        <option value="EPYC-Milan">EPYC-Milan</option>
+                                                                    </optgroup>
+                                                                </select>
+                                                                {selectedCluster.cpu_baseline && selectedCluster.cpu_baseline !== 'none' && (
+                                                                    <div className="mt-2 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                                                                        <div className="flex items-start gap-2">
+                                                                            <span className="text-blue-400">🔒</span>
+                                                                            <div className="text-xs text-blue-200">
+                                                                                {t('cpuBaselineActive') || `Baseline active: VMs with CPU type above "${selectedCluster.cpu_baseline}" will not be auto-migrated.`}
+                                                                            </div>
                                                                         </div>
                                                                     </div>
-                                                                </div>
-                                                            )}
-                                                        </div>
+                                                                )}
+                                                            </div>
+                                                        </details>
                                                     </div>
 
                                                     {/* LW: Auth mode info - so admins know what auth is in use (#110) */}
@@ -14536,17 +14546,17 @@
                         </div>
                     )}
 
-                    {/* Toast Notifications */}
-                    <div className={`fixed ${isCorporate ? 'bottom-8' : 'bottom-6'} right-6 z-50 space-y-2`}>
-                        {toasts.map(toast => (
-                            <Toast
-                                key={toast.id}
-                                message={toast.message}
-                                type={toast.type}
-                                onClose={() => removeToast(toast.id)}
-                            />
-                        ))}
-                    </div>
+                    {/* Toast Notifications — rendered via portal to document.body to avoid corporate layout z-index/overflow issues */}
+                    {ReactDOM.createPortal(
+                        React.createElement('div', {
+                            style: { position: 'fixed', bottom: isCorporate ? 64 : 24, right: 24, zIndex: 99999, display: 'flex', flexDirection: 'column', gap: 8 }
+                        },
+                            toasts.map(toast =>
+                                React.createElement(Toast, { key: toast.id, message: toast.message, type: toast.type, onClose: () => removeToast(toast.id) })
+                            )
+                        ),
+                        document.body
+                    )}
 
                     {/* Schedule Modal - MK Jan 2026 */}
                     {showScheduleModal && (

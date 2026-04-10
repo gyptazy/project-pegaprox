@@ -316,7 +316,8 @@ class PegaProxManager:
         self._csrf_token = None
         self._api_token = None  # NS: for API token auth (user@realm!tokenid=secret)
         self._using_api_token = False
-        self.current_host = None  # Track which host we're connected to
+        self.current_host = None  # Track which host we're connected to (resolved IP after #279)
+        self._original_host = None  # original hostname before DNS resolution
         self._ssl_verify = False
         
         # Connection state tracking
@@ -371,6 +372,25 @@ class PegaProxManager:
         if h and ':' in h and not h.startswith('['):
             return f'[{h}]'
         return h
+
+    @staticmethod
+    def _resolve_host(hostname):
+        """Resolve hostname to IP once — avoids repeated DNS lookups (#279)
+        MK: Apr 2026 - user reported 1M+ DNS queries/day from a single cluster.
+        Every _create_session() call triggered a fresh lookup if host was a name.
+        """
+        import socket
+        try:
+            results = socket.getaddrinfo(hostname, 8006, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            if results:
+                # prefer IPv4 over IPv6 for compatibility
+                for family, _, _, _, addr in results:
+                    if family == socket.AF_INET:
+                        return addr[0]
+                return results[0][4][0]
+        except socket.gaierror:
+            pass
+        return hostname
 
     @property
     def host(self) -> str:
@@ -582,7 +602,16 @@ class PegaProxManager:
                         resp = session.get(test_url, headers=headers, timeout=10)
 
                         if resp.status_code == 200:
-                            self.current_host = host
+                            # resolve hostname → IP to avoid repeated DNS lookups (#279)
+                            # but only when ssl_verify is off — with ssl on, cert CN needs the hostname
+                            if not self._ssl_verify:
+                                resolved = self._resolve_host(host)
+                                if resolved != host:
+                                    self.logger.info(f"Resolved {host} → {resolved} (caching IP)")
+                                self.current_host = resolved
+                            else:
+                                self.current_host = host
+                            self._original_host = host
                             if hasattr(self, "_cached_mgmt_iface"):
                                 self._cached_mgmt_iface = None
                                 self._cached_mgmt_network = None
@@ -625,7 +654,14 @@ class PegaProxManager:
                             self._csrf_token = data['CSRFPreventionToken']
                             self._api_token = None
 
-                            self.current_host = host
+                            if not self._ssl_verify:
+                                resolved = self._resolve_host(host)
+                                if resolved != host:
+                                    self.logger.info(f"Resolved {host} → {resolved} (caching IP)")
+                                self.current_host = resolved
+                            else:
+                                self.current_host = host
+                            self._original_host = host
                             if hasattr(self, "_cached_mgmt_iface"):
                                 self._cached_mgmt_iface = None
                                 self._cached_mgmt_network = None
@@ -9984,6 +10020,202 @@ echo "AGENT_INSTALLED_OK"
             self.logger.error(f"Error getting ISO list: {e}")
             return []
     
+    # LW: Apr 2026 - ISO/Template sync across cluster nodes
+    # for iSCSI-only setups where file-level storage isn't shared
+    def get_content_sync_status(self, content_type='iso'):
+        """Build matrix of which ISOs/templates exist on which nodes"""
+        if not self.is_connected:
+            return {'nodes': [], 'files': [], 'matrix': {}}
+        try:
+            ns = self.get_node_status()
+            online_nodes = [n for n, d in ns.items() if d.get('status') == 'online']
+            host = self.host
+            # collect per-node content
+            node_files = {}
+            for node in online_nodes:
+                storages = [s for s in self.get_storage_list(node)
+                            if content_type in s.get('content', '') and s.get('active')]
+                files = []
+                for stor in storages:
+                    url = f"https://{host}:8006/api2/json/nodes/{node}/storage/{stor['storage']}/content"
+                    r = self._create_session().get(url, params={'content': content_type}, timeout=10)
+                    if r.status_code == 200:
+                        for item in r.json().get('data', []):
+                            files.append({
+                                'volid': item.get('volid', ''),
+                                'name': item.get('volid', '').split('/')[-1] if '/' in item.get('volid', '') else item.get('volid', ''),
+                                'size': item.get('size', 0),
+                                'storage': stor['storage'],
+                            })
+                node_files[node] = files
+
+            # build deduplicated file list + matrix
+            all_names = {}
+            for node, files in node_files.items():
+                for f in files:
+                    key = f"{f['storage']}:{f['name']}"
+                    if key not in all_names:
+                        all_names[key] = {'name': f['name'], 'storage': f['storage'], 'size': f['size']}
+            matrix = {}
+            for key in all_names:
+                matrix[key] = {}
+                for node in online_nodes:
+                    matrix[key][node] = any(
+                        f"{fi['storage']}:{fi['name']}" == key for fi in node_files.get(node, [])
+                    )
+            return {
+                'nodes': online_nodes,
+                'files': list(all_names.values()),
+                'matrix': matrix,
+            }
+        except Exception as e:
+            self.logger.error(f"[SYNC] Error building sync status: {e}")
+            return {'nodes': [], 'files': [], 'matrix': {}}
+
+    def sync_content_to_nodes(self, source_node, storage, filename, content_type='iso', target_nodes=None):
+        """Copy ISO/template from source node to other nodes via SSH
+        MK: tries node-to-node scp (with sshpass) first, falls back to sftp relay
+        """
+        results = []
+        if not self.is_connected:
+            return [{'error': 'Not connected'}]
+
+        ns = self.get_node_status()
+        online_nodes = [n for n, d in ns.items() if d.get('status') == 'online' and n != source_node]
+        if target_nodes:
+            online_nodes = [n for n in online_nodes if n in target_nodes]
+        if not online_nodes:
+            return [{'error': 'No target nodes available'}]
+
+        src_ip = self._get_node_ip(source_node) or source_node
+        src_path = self._resolve_storage_path(source_node, storage, content_type)
+        if not src_path:
+            return [{'error': f'Cannot resolve storage path on {source_node}'}]
+        src_file = f"{src_path}/{filename}"
+        self.logger.info(f"[SYNC] Source: {src_ip}:{src_file}")
+
+        ssh_user = getattr(self.config, 'ssh_user', '') or 'root'
+        ssh_pass = getattr(self.config, 'ssh_password', None) or self.config.pass_
+
+        for tgt_node in online_nodes:
+            tgt_ip = self._get_node_ip(tgt_node) or tgt_node
+            tgt_path = self._resolve_storage_path(tgt_node, storage, content_type)
+            if not tgt_path:
+                results.append({'node': tgt_node, 'success': False, 'error': f'Storage {storage} not on {tgt_node}'})
+                continue
+            self.logger.info(f"[SYNC] Target: {tgt_node} ({tgt_ip}) path={tgt_path}")
+
+            # check if file already exists
+            try:
+                ssh_chk = self._ssh_connect(tgt_ip)
+                _, out, _ = ssh_chk.exec_command(f"test -f '{tgt_path}/{filename}' && echo EXISTS", timeout=10)
+                out.channel.recv_exit_status()
+                if 'EXISTS' in out.read().decode(errors='replace'):
+                    results.append({'node': tgt_node, 'success': True, 'skipped': True})
+                    ssh_chk.close()
+                    continue
+                ssh_chk.close()
+            except:
+                pass
+
+            # ensure target directory exists
+            try:
+                ssh_mk = self._ssh_connect(tgt_ip)
+                ssh_mk.exec_command(f"mkdir -p '{tgt_path}'", timeout=10)
+                ssh_mk.close()
+            except:
+                pass
+
+            synced = False
+
+            # method 1: node-to-node scp with sshpass (most PVE nodes don't have keys to each other)
+            try:
+                ssh_src = self._ssh_connect(src_ip)
+                # try with sshpass if password available
+                if ssh_pass:
+                    import shlex
+                    escaped_pass = shlex.quote(ssh_pass)
+                    scp_cmd = f"sshpass -p {escaped_pass} scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 '{src_file}' {ssh_user}@{tgt_ip}:'{tgt_path}/'"
+                else:
+                    scp_cmd = f"scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 '{src_file}' {ssh_user}@{tgt_ip}:'{tgt_path}/'"
+                _, scp_out, scp_err = ssh_src.exec_command(scp_cmd, timeout=3600)
+                rc = scp_out.channel.recv_exit_status()
+                ssh_src.close()
+                if rc == 0:
+                    synced = True
+                    self.logger.info(f"[SYNC] OK {filename} → {tgt_node} (SCP)")
+                    results.append({'node': tgt_node, 'success': True, 'method': 'scp'})
+                else:
+                    err_msg = scp_err.read().decode(errors='replace')[:300]
+                    self.logger.debug(f"[SYNC] SCP failed {source_node}→{tgt_node}: {err_msg}")
+            except Exception as e:
+                self.logger.debug(f"[SYNC] SCP error: {e}")
+
+            # method 2: sftp relay through PegaProx
+            if not synced:
+                try:
+                    self.logger.info(f"[SYNC] SFTP relay: {src_ip}:{src_file} → {tgt_ip}:{tgt_path}/{filename}")
+                    ssh_s = self._ssh_connect(src_ip)
+                    ssh_t = self._ssh_connect(tgt_ip)
+                    sftp_s = ssh_s.open_sftp()
+                    sftp_t = ssh_t.open_sftp()
+                    # ensure dir on target via sftp
+                    try: sftp_t.stat(tgt_path)
+                    except: sftp_t.mkdir(tgt_path)
+                    with sftp_s.open(src_file, 'rb') as rf:
+                        with sftp_t.open(f"{tgt_path}/{filename}", 'wb') as wf:
+                            wf.set_pipelined(True)
+                            copied = 0
+                            while True:
+                                chunk = rf.read(4 * 1024 * 1024)
+                                if not chunk:
+                                    break
+                                wf.write(chunk)
+                                copied += len(chunk)
+                    sftp_s.close(); sftp_t.close()
+                    ssh_s.close(); ssh_t.close()
+                    self.logger.info(f"[SYNC] OK {filename} → {tgt_node} (SFTP, {copied/(1024*1024):.0f} MB)")
+                    results.append({'node': tgt_node, 'success': True, 'method': 'sftp'})
+                except Exception as e:
+                    self.logger.error(f"[SYNC] SFTP failed {tgt_node}: {e}")
+                    results.append({'node': tgt_node, 'success': False, 'error': str(e)})
+                    try: ssh_s.close()
+                    except: pass
+                    try: ssh_t.close()
+                    except: pass
+
+        # store result for UI polling
+        if not hasattr(self, '_sync_last_result'):
+            self._sync_last_result = {}
+        self._sync_last_result = {
+            'timestamp': datetime.now().isoformat(),
+            'filename': filename,
+            'results': results,
+            'ok': sum(1 for r in results if r.get('success')),
+            'failed': sum(1 for r in results if not r.get('success')),
+        }
+        return results
+
+    def _resolve_storage_path(self, node, storage, content_type='iso'):
+        """Get filesystem path for a storage's ISO/template directory on a node"""
+        try:
+            node_ip = self._get_node_ip(node) or node
+            ssh = self._ssh_connect(node_ip)
+            # use pvesm to get the base path
+            subdir = 'template/iso' if content_type == 'iso' else 'template/cache'
+            cmd = f"pvesm path {storage}:{content_type}/dummy.file 2>/dev/null || echo '/var/lib/vz/{subdir}/dummy.file'"
+            _, out, _ = ssh.exec_command(cmd, timeout=10)
+            out.channel.recv_exit_status()
+            full_path = out.read().decode(errors='replace').strip()
+            ssh.close()
+            # strip the dummy filename to get directory
+            if full_path:
+                import os
+                return os.path.dirname(full_path)
+        except Exception as e:
+            self.logger.debug(f"[SYNC] Cannot resolve path for {storage} on {node}: {e}")
+        return None
+
     # MK: Resource Pools - Jan 2026
     def get_pools(self) -> List[Dict]:
         """Get all resource pools from Proxmox"""

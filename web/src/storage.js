@@ -13,7 +13,79 @@
             const [storageContent, setStorageContent] = useState([]);
             const [contentLoading, setContentLoading] = useState(false);
             const [expandedNodes, setExpandedNodes] = useState({});
-            const [activeTab, setActiveTab] = useState('browse'); // browse, balancing
+            const [activeTab, setActiveTab] = useState('browse'); // browse, balancing, sync
+            const [syncStatus, setSyncStatus] = useState(null);
+            const [syncLoading, setSyncLoading] = useState(false);
+            const [syncContentType, setSyncContentType] = useState('iso');
+            const [syncingFiles, setSyncingFiles] = useState({});  // {filename: true} while syncing
+
+            const refreshSyncStatus = () => {
+                setSyncLoading(true);
+                authFetch(`${API_URL}/clusters/${clusterId}/iso-sync/status?content=${syncContentType}`)
+                    .then(r => r?.json()).then(d => { if(d) setSyncStatus(d); }).catch(()=>{}).finally(()=>setSyncLoading(false));
+            };
+
+            const _pollSyncResult = (filename, attempt = 0) => {
+                if (attempt > 20) { setSyncingFiles(prev => { const n = {...prev}; delete n[filename]; return n; }); return; }
+                setTimeout(async () => {
+                    try {
+                        const r = await authFetch(`${API_URL}/clusters/${clusterId}/iso-sync/last-result`);
+                        if (r?.ok) {
+                            const d = await r.json();
+                            if (d.filename === filename && d.results) {
+                                if (d.failed > 0) addToast(`Sync ${filename}: ${d.ok} ok, ${d.failed} failed`, 'error');
+                                else if (d.ok > 0) addToast(`Sync complete: ${filename} → ${d.ok} node(s)`, 'success');
+                                else addToast(`Sync ${filename}: already on all nodes`, 'success');
+                                setSyncingFiles(prev => { const n = {...prev}; delete n[filename]; return n; });
+                                refreshSyncStatus();
+                                return;
+                            }
+                        }
+                    } catch(e) {}
+                    _pollSyncResult(filename, attempt + 1);
+                }, 3000);
+            };
+
+            const triggerSync = async (sourceNode, storage, filename) => {
+                setSyncingFiles(prev => ({...prev, [filename]: true}));
+                try {
+                    const r = await authFetch(`${API_URL}/clusters/${clusterId}/iso-sync`, {
+                        method: 'POST', headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({ source_node: sourceNode, storage, filename, content_type: syncContentType })
+                    });
+                    if (r?.ok) {
+                        addToast(`Syncing ${filename}...`, 'success');
+                        _pollSyncResult(filename);
+                    } else {
+                        const d = await r?.json().catch(() => ({}));
+                        addToast(d.error || `Sync failed for ${filename}`, 'error');
+                        setSyncingFiles(prev => { const n = {...prev}; delete n[filename]; return n; });
+                    }
+                } catch(e) {
+                    addToast(`Sync error: ${e.message}`, 'error');
+                    setSyncingFiles(prev => { const n = {...prev}; delete n[filename]; return n; });
+                }
+            };
+
+            const triggerSyncAll = async () => {
+                setSyncingFiles({_all: true});
+                try {
+                    const r = await authFetch(`${API_URL}/clusters/${clusterId}/iso-sync/all`, {
+                        method: 'POST', headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({content_type: syncContentType})
+                    });
+                    if (r?.ok) {
+                        addToast(t('syncAllStarted') || 'Syncing all missing files...', 'success');
+                        setTimeout(refreshSyncStatus, 10000);
+                    } else {
+                        const d = await r?.json().catch(() => ({}));
+                        addToast(d.error || 'Sync all failed', 'error');
+                    }
+                } catch(e) {
+                    addToast(`Sync error: ${e.message}`, 'error');
+                }
+                setTimeout(() => setSyncingFiles({}), 5000);
+            };
             const [uploadModalOpen, setUploadModalOpen] = useState(false);
             const [uploadFile, setUploadFile] = useState(null);
             const [uploading, setUploading] = useState(false);
@@ -867,6 +939,12 @@
                                 <Icons.Zap style={{width: 14, height: 14, display: 'inline', marginRight: 6}} />
                                 Storage Balancing
                             </button>
+                            <button onClick={() => {
+                                setActiveTab('sync'); refreshSyncStatus();
+                            }} className={activeTab === 'sync' ? 'active' : ''}>
+                                <Icons.RefreshCw style={{width: 14, height: 14, display: 'inline', marginRight: 6}} />
+                                {t('isoSync') || 'ISO Sync'}
+                            </button>
                         </div>
                     ) : (
                     <div className="flex gap-2">
@@ -888,10 +966,107 @@
                             <Icons.Zap className="inline mr-2" />
                             Storage Balancing
                         </button>
+                        <button
+                            onClick={() => {
+                                setActiveTab('sync'); refreshSyncStatus();
+                            }}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                                activeTab === 'sync' ? 'bg-proxmox-orange text-white' : 'bg-proxmox-card text-gray-400 hover:text-white'
+                            }`}
+                        >
+                            <Icons.RefreshCw className="inline mr-2" />
+                            {t('isoSync') || 'ISO Sync'}
+                        </button>
                     </div>
                     )}
                     
-                    {activeTab === 'browse' ? (
+                    {activeTab === 'sync' ? (
+                        /* ISO/Template Sync Tab */
+                        <div className="bg-proxmox-card border border-proxmox-border rounded-xl p-6">
+                            <div className="flex items-center justify-between mb-4">
+                                <div>
+                                    <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                                        <Icons.RefreshCw className="w-5 h-5" />
+                                        {t('isoSync') || 'ISO / Template Sync'}
+                                    </h3>
+                                    <p className="text-sm text-gray-500 mt-1">{t('isoSyncDesc') || 'Distribute ISOs and templates across all cluster nodes. Useful for iSCSI-only setups without shared file storage.'}</p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <select value={syncContentType} onChange={e => {
+                                        setSyncContentType(e.target.value);
+                                        setTimeout(refreshSyncStatus, 50);
+                                    }} className="bg-proxmox-dark border border-proxmox-border rounded-lg px-3 py-1.5 text-sm text-white">
+                                        <option value="iso">ISOs</option>
+                                        <option value="vztmpl">Templates</option>
+                                    </select>
+                                    <button onClick={triggerSyncAll} disabled={syncingFiles._all}
+                                        className="px-4 py-1.5 bg-proxmox-orange hover:bg-orange-600 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5">
+                                        {syncingFiles._all && <Icons.RotateCw className="w-3.5 h-3.5 animate-spin" />}
+                                        {t('syncAll') || 'Sync All Missing'}
+                                    </button>
+                                    <button onClick={refreshSyncStatus} className="p-1.5 text-gray-400 hover:text-white transition-colors" title="Refresh">
+                                        <Icons.RefreshCw className={`w-4 h-4 ${syncLoading ? 'animate-spin' : ''}`} />
+                                    </button>
+                                </div>
+                            </div>
+
+                            {syncLoading && !syncStatus ? (
+                                <div className="flex justify-center py-12"><Icons.RotateCw className="animate-spin w-8 h-8 text-gray-500" /></div>
+                            ) : syncStatus && syncStatus.files?.length > 0 ? (
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="border-b border-proxmox-border">
+                                                <th className="text-left py-2 px-3 text-gray-400 font-medium">File</th>
+                                                <th className="text-left py-2 px-3 text-gray-400 font-medium">Size</th>
+                                                {syncStatus.nodes?.map(n => (
+                                                    <th key={n} className="text-center py-2 px-2 text-gray-400 font-medium text-xs">{n}</th>
+                                                ))}
+                                                <th className="text-right py-2 px-3 text-gray-400 font-medium">Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {syncStatus.files.map((f, i) => {
+                                                const key = `${f.storage}:${f.name}`;
+                                                const nodeMap = syncStatus.matrix?.[key] || {};
+                                                const allSynced = syncStatus.nodes?.every(n => nodeMap[n]);
+                                                const sourceNode = syncStatus.nodes?.find(n => nodeMap[n]);
+                                                return (
+                                                    <tr key={i} className="border-b border-gray-700/30 hover:bg-proxmox-hover">
+                                                        <td className="py-2 px-3 text-white font-medium truncate max-w-[200px]" title={f.name}>{f.name}</td>
+                                                        <td className="py-2 px-3 text-gray-400 whitespace-nowrap">{f.size > 1073741824 ? `${(f.size/1073741824).toFixed(1)} GB` : `${(f.size/1048576).toFixed(0)} MB`}</td>
+                                                        {syncStatus.nodes?.map(n => (
+                                                            <td key={n} className="text-center py-2 px-2">
+                                                                {nodeMap[n] ? <span className="text-green-400">✓</span> : <span className="text-red-400/60">✗</span>}
+                                                            </td>
+                                                        ))}
+                                                        <td className="py-2 px-3 text-right">
+                                                            {allSynced ? (
+                                                                <span className="text-xs text-green-400/70">{t('synced') || 'Synced'}</span>
+                                                            ) : sourceNode ? (
+                                                                <button
+                                                                    onClick={() => triggerSync(sourceNode, f.storage, f.name)}
+                                                                    disabled={!!syncingFiles[f.name]}
+                                                                    className="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded transition-colors disabled:opacity-50 flex items-center gap-1"
+                                                                >
+                                                                    {syncingFiles[f.name] ? <><Icons.RotateCw className="w-3 h-3 animate-spin" /> Syncing...</> : (t('sync') || 'Sync')}
+                                                                </button>
+                                                            ) : null}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : (
+                                <div className="text-center py-12 text-gray-500">
+                                    <Icons.Folder className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                                    <p>{t('noFilesFound') || 'No ISOs or templates found on any node.'}</p>
+                                </div>
+                            )}
+                        </div>
+                    ) : activeTab === 'browse' ? (
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                             {/* Storage Tree */}
                             <div className="lg:col-span-1 bg-proxmox-card border border-proxmox-border rounded-xl overflow-hidden">

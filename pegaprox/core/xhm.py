@@ -715,9 +715,13 @@ def _run_xcpng_to_pve(task):
                     ssh.close()
                     return
 
-                # stream XCP-ng export directly into the volume via dd
-                dd_cmd = f"dd of='{dev_path}' bs=4M conv=fdatasync 2>/dev/null"
-                dd_in, dd_out, dd_err = ssh.exec_command(dd_cmd, timeout=7200)
+                # MK: stream XCP-ng export into the volume
+                # RBD storage returns URI like rbd:pool/image:conf=... which dd can't handle (#272)
+                if dev_path.startswith('rbd:'):
+                    write_cmd = f"qemu-img dd -f raw -O raw bs=4M if=/dev/stdin of='{dev_path}'"
+                else:
+                    write_cmd = f"dd of='{dev_path}' bs=4M conv=fdatasync 2>/dev/null"
+                dd_in, dd_out, dd_err = ssh.exec_command(write_cmd, timeout=7200)
 
                 for chunk in export_resp.iter_content(chunk_size=_CHUNK_SIZE):
                     if task.cancel_event.is_set():
@@ -1082,9 +1086,11 @@ def _run_pve_to_xcpng(task):
                     ssh.exec_command(f"lvchange -ay '{disk['path']}' 2>/dev/null", timeout=10)
                     time.sleep(0.5)  # give udev a moment
 
-                # build export command
+                # build export command — #272: rbd URIs need qemu-img, dd can't read them
                 if disk['format'] == 'qcow2':
                     export_cmd = f"qemu-img convert -f qcow2 -O raw '{disk['path']}' /dev/stdout"
+                elif disk['path'].startswith('rbd:'):
+                    export_cmd = f"qemu-img dd -f raw -O raw bs=4M if='{disk['path']}' of=/dev/stdout"
                 else:
                     export_cmd = f"dd if='{disk['path']}' bs=4M status=none"
 
