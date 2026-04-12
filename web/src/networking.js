@@ -99,8 +99,8 @@
                                     <input
                                         value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
                                         placeholder={t('search') + '...'}
-                                        className="w-full pl-7 pr-2 py-1 text-[13px] bg-transparent border rounded text-white placeholder-gray-500"
-                                        style={{borderColor: 'var(--corp-border-medium)'}}
+                                        className="w-full pr-2 py-1 text-[13px] bg-transparent border rounded text-white placeholder-gray-500"
+                                        style={{paddingLeft: '28px', borderColor: 'var(--corp-border-medium)'}}
                                     />
                                 </div>
                             </div>

@@ -123,7 +123,7 @@
             const [requires2FASetup, setRequires2FASetup] = useState(false);  // NS: Feb 2026 - Force 2FA setup
             const [ldapEnabled, setLdapEnabled] = useState(false);  // MK: Feb 2026 - LDAP available
             const [oidcEnabled, setOidcEnabled] = useState(false);  // NS: Feb 2026 - OIDC available
-            const [oidcButtonText, setOidcButtonText] = useState('Sign in with Microsoft');
+            const [oidcButtonText, setOidcButtonText] = useState('Sign in with SSO');
             const [loginBackground, setLoginBackground] = useState('');
             const [reverseProxyEnabled, setReverseProxyEnabled] = useState(false);
             
@@ -192,7 +192,7 @@
                         try {
                             const errData = await r.json();
                             if (errData.ldap_enabled !== undefined) setLdapEnabled(errData.ldap_enabled);
-                            if (errData.oidc_enabled !== undefined) { setOidcEnabled(errData.oidc_enabled); setOidcButtonText(errData.oidc_button_text || 'Sign in with Microsoft'); }
+                            if (errData.oidc_enabled !== undefined) { setOidcEnabled(errData.oidc_enabled); setOidcButtonText(errData.oidc_button_text || 'Sign in with SSO'); }
                             if (errData.login_background) setLoginBackground(errData.login_background);
                             if (errData.reverse_proxy_enabled !== undefined) setReverseProxyEnabled(errData.reverse_proxy_enabled);
                         } catch(e) {}
@@ -333,7 +333,7 @@
                 try {
                     await fetch(`${API_URL}/auth/logout`, {
                         method: 'POST',
-                        credentials: 'include'  // Cookie is sent automatically
+                        credentials: 'include'
                     });
                 } catch (err) {
                     console.error('Logout request failed:', err);
@@ -341,6 +341,14 @@
                 setUser(null);
                 setSessionId(null);
                 setIsAuthenticated(false);
+                // LW: #295 — re-fetch login page info so OIDC button shows after logout
+                try {
+                    const r = await fetch(`${API_URL}/auth/check?t=${Date.now()}`, { credentials: 'include' });
+                    const d = await r.json();
+                    if (d.oidc_enabled !== undefined) { setOidcEnabled(d.oidc_enabled); setOidcButtonText(d.oidc_button_text || 'Sign in with SSO'); }
+                    if (d.ldap_enabled !== undefined) setLdapEnabled(d.ldap_enabled);
+                    if (d.login_background) setLoginBackground(d.login_background);
+                } catch(e) {}
             };
             
             // NS: No more X-Session-ID header needed for fetch - cookies are automatic

@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.9.5--beta-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-0.9.6--beta-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.8+-green" alt="Python"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0--License-orange" alt="License"/>
 </p>
@@ -291,6 +291,7 @@ This project is licensed under the AGPL-3.0 License - see the [LICENSE](LICENSE)
 
 ## 💬 Support
 
+- 💬 Discord: [Community Server](https://discord.gg/AJPf3H62QW)
 - 📧 Email: support@pegaprox.com
 - 🐛 Issues: [GitHub Issues](https://github.com/PegaProx/project-pegaprox/issues)
 

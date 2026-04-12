@@ -233,14 +233,23 @@
                                         <span className="text-xs text-gray-500 uppercase">or</span>
                                         <div className="flex-1 h-px bg-proxmox-border"></div>
                                     </div>
+                                    {/* LW: #295 — detect provider from button text, show matching icon + color */}
                                     <button onClick={handleOidcLogin} disabled={oidcLoading}
-                                        className="w-full flex items-center justify-center gap-3 px-4 py-2.5 bg-[#0078d4] hover:bg-[#106ebe] disabled:opacity-50 rounded-lg text-white font-medium text-sm transition-colors">
+                                        className={`w-full flex items-center justify-center gap-3 px-4 py-2.5 disabled:opacity-50 rounded-lg text-white font-medium text-sm transition-colors ${
+                                            (oidcButtonText || '').toLowerCase().includes('microsoft') || (oidcButtonText || '').toLowerCase().includes('entra')
+                                                ? 'bg-[#0078d4] hover:bg-[#106ebe]'
+                                                : (oidcButtonText || '').toLowerCase().includes('google')
+                                                    ? 'bg-white hover:bg-gray-100 text-gray-700 border border-gray-300'
+                                                    : 'bg-proxmox-card hover:bg-proxmox-hover border border-proxmox-border'
+                                        }`}>
                                         {oidcLoading ? (
                                             <Icons.Loader className="w-5 h-5 animate-spin" />
-                                        ) : (
+                                        ) : (oidcButtonText || '').toLowerCase().includes('microsoft') || (oidcButtonText || '').toLowerCase().includes('entra') ? (
                                             <svg className="w-5 h-5" viewBox="0 0 21 21" fill="none"><path d="M0 0h10v10H0z" fill="#f25022"/><path d="M11 0h10v10H11z" fill="#7fba00"/><path d="M0 11h10v10H0z" fill="#00a4ef"/><path d="M11 11h10v10H11z" fill="#ffb900"/></svg>
+                                        ) : (
+                                            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
                                         )}
-                                        {oidcButtonText || 'Sign in with Microsoft'}
+                                        {oidcButtonText || 'Sign in with SSO'}
                                     </button>
                                     {oidcError && (
                                         <p className="text-red-400 text-xs text-center mt-2">{oidcError}</p>

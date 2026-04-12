@@ -962,6 +962,13 @@ def verify_password_api():
         result = ldap_authenticate(username, password)
         if 'error' in result:
             return jsonify({'error': 'Invalid password'}), 401
+    elif auth_source in ('oidc', 'entra'):
+        # MK: OIDC/Entra users don't have local passwords — re-auth via session validity (#294)
+        # if they have a valid admin session, that's sufficient for sensitive ops
+        if user.get('role') != 'admin':
+            return jsonify({'error': 'Admin access required'}), 403
+        # session is already validated by @require_auth — accept
+        logging.info(f"[AUTH] OIDC re-auth bypass for admin '{username}' (no local password)")
     else:
         return jsonify({'error': 'Password verification not supported for this account type'}), 400
 

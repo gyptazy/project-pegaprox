@@ -1617,8 +1617,10 @@ def get_node_disk_smart_api(cluster_id, node, disk):
         return jsonify({'error': 'Cluster not found'}), 404
     
     manager = cluster_managers[cluster_id]
-    # Decode disk path (e.g., /dev/sda -> %2Fdev%2Fsda)
-    smart_data = manager.get_node_disk_smart(node, '/' + disk if not disk.startswith('/') else disk)
+    # disk comes in as "nvme0n1" or "sda" (frontend strips /dev/), PVE needs "/dev/nvme0n1"
+    if not disk.startswith('/dev/'):
+        disk = '/dev/' + disk.lstrip('/')
+    smart_data = manager.get_node_disk_smart(node, disk)
     return jsonify(smart_data)
 
 

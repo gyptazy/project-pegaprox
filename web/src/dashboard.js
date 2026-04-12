@@ -6284,18 +6284,22 @@
             };
 
             // #256: Re-configure cluster — verify password then open AddClusterModal with pre-filled config
+            // MK: #294 — OIDC/Entra users don't have local passwords, skip prompt
             const handleReconfigureAuth = async () => {
-                if (!reconfigureCluster || !reconfigurePassword) return;
+                if (!reconfigureCluster) return;
+                const isExternalAuth = user?.auth_source && !['local', 'ldap'].includes(user.auth_source);
+                if (!isExternalAuth && !reconfigurePassword) return;
                 setReconfigureLoading(true);
                 try {
-                    // verify password first
+                    // verify password (OIDC users: backend accepts session-based re-auth)
                     const verifyResp = await authFetch(`${API_URL}/auth/verify-password`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ password: reconfigurePassword })
+                        body: JSON.stringify({ password: reconfigurePassword || '' })
                     });
                     if (!verifyResp || !verifyResp.ok) {
-                        addToast(t('invalidPassword') || 'Invalid password', 'error');
+                        const errData = await verifyResp?.json().catch(() => ({}));
+                        addToast(errData.error || t('invalidPassword') || 'Invalid password', 'error');
                         setReconfigureLoading(false);
                         return;
                     }
@@ -8953,13 +8957,14 @@
                                                         {/* LW: compact filter bar */}
                                                         <div className="flex flex-wrap items-end gap-2">
                                                             <div className="flex-1 min-w-[180px] max-w-xs">
-                                                                <div className="relative">
-                                                                    <Icons.Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600 w-3.5 h-3.5" />
+                                                                <div className="relative" style={{display:'flex',alignItems:'center'}}>
+                                                                    <Icons.Search style={{position:'absolute',left:10,width:14,height:14,color:'#5a7a8a',pointerEvents:'none'}} />
                                                                     <input type="text" value={logEventFilters.search}
                                                                         onChange={(e) => setLogEventFilters(prev => ({ ...prev, search: e.target.value }))}
                                                                         onKeyDown={(e) => { if (e.key === 'Enter') applyLogEventFilters(); }}
                                                                         placeholder="Search messages..."
-                                                                        className="w-full rounded-lg bg-proxmox-dark border border-proxmox-border pl-8 pr-3 py-1.5 text-sm text-white placeholder-gray-600" />
+                                                                        className="w-full text-sm text-white placeholder-gray-600"
+                                                                        style={{paddingLeft:'32px',paddingRight:'12px',paddingTop:'6px',paddingBottom:'6px',background:'var(--corp-surface-0, #0e161b)',border:'1px solid var(--corp-border-medium, #344955)',borderRadius:'3px'}} />
                                                                 </div>
                                                             </div>
                                                             <select value={logEventFilters.severity} onChange={(e) => setLogEventFilters(prev => ({ ...prev, severity: e.target.value }))}
@@ -11916,13 +11921,13 @@
                                                 {/* LW: search + filter */}
                                                 <div className="flex items-center gap-3">
                                                     <div className="flex-1 relative">
-                                                        <Icons.Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{color: 'var(--corp-text-muted)'}} />
+                                                        <Icons.Search className="absolute top-1/2 -translate-y-1/2 w-4 h-4" style={{left: isCorporate ? 10 : 12, color: 'var(--corp-text-muted)', pointerEvents: 'none'}} />
                                                         <input
                                                             value={vmwareSearch}
                                                             onChange={e => setVmwareSearch(e.target.value)}
                                                             placeholder="Search VMs..."
-                                                            className={isCorporate ? 'w-full pl-10 pr-4 py-2 text-[13px] text-white placeholder-gray-500 focus:outline-none' : 'w-full pl-10 pr-4 py-2.5 bg-proxmox-card border border-proxmox-border rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500/50 text-sm'}
-                                                            style={isCorporate ? {background: 'var(--corp-header-bg)', border: '1px solid var(--corp-border-medium)', borderRadius: '2px'} : {}}
+                                                            className={isCorporate ? 'w-full pr-4 py-2 text-[13px] text-white placeholder-gray-500 focus:outline-none' : 'w-full pl-10 pr-4 py-2.5 bg-proxmox-card border border-proxmox-border rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500/50 text-sm'}
+                                                            style={isCorporate ? {paddingLeft: '32px', background: 'var(--corp-header-bg)', border: '1px solid var(--corp-border-medium)', borderRadius: '2px'} : {}}
                                                         />
                                                     </div>
                                                     <div className={isCorporate ? 'flex items-center gap-0' : 'flex items-center gap-1 p-1 bg-proxmox-card border border-proxmox-border rounded-xl'} style={isCorporate ? {border: '1px solid #485764', borderRadius: '2px'} : {}}>
@@ -15700,16 +15705,26 @@
                                     <p className="text-xs text-gray-400 mt-1">{reconfigureCluster.display_name || reconfigureCluster.name} — {reconfigureCluster.host}</p>
                                 </div>
                                 <form onSubmit={e => { e.preventDefault(); handleReconfigureAuth(); }} className="p-6">
-                                    <p className="text-xs text-gray-500 mb-4">{t('reconfigureHint') || 'Enter your PegaProx password to verify your identity.'}</p>
-                                    <input
-                                        type="password"
-                                        value={reconfigurePassword}
-                                        onChange={e => setReconfigurePassword(e.target.value)}
-                                        placeholder={t('yourPassword') || 'Your password'}
-                                        className="w-full px-3 py-2.5 bg-proxmox-dark border border-proxmox-border rounded-lg text-white text-sm focus:border-proxmox-orange focus:outline-none transition-colors"
-                                        autoFocus
-                                        required
-                                    />
+                                    {user?.auth_source && !['local', 'ldap'].includes(user.auth_source) ? (
+                                        <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg mb-4">
+                                            <p className="text-xs text-blue-300">
+                                                {t('oidcReauthHint') || `You're signed in via ${user.auth_source === 'entra' ? 'Microsoft Entra ID' : 'SSO'}. No password required — your session will be verified.`}
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <>
+                                        <p className="text-xs text-gray-500 mb-4">{t('reconfigureHint') || 'Enter your PegaProx password to verify your identity.'}</p>
+                                        <input
+                                            type="password"
+                                            value={reconfigurePassword}
+                                            onChange={e => setReconfigurePassword(e.target.value)}
+                                            placeholder={t('yourPassword') || 'Your password'}
+                                            className="w-full px-3 py-2.5 bg-proxmox-dark border border-proxmox-border rounded-lg text-white text-sm focus:border-proxmox-orange focus:outline-none transition-colors"
+                                            autoFocus
+                                            required
+                                        />
+                                        </>
+                                    )}
                                     <div className="flex justify-end gap-3 mt-6">
                                         <button type="button" onClick={() => { setReconfigureCluster(null); setReconfigurePassword(''); }} className="px-4 py-2 bg-proxmox-dark border border-proxmox-border hover:bg-proxmox-hover rounded-lg text-sm text-gray-300 transition-colors">
                                             {t('cancel') || 'Cancel'}

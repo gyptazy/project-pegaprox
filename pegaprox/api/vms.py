@@ -463,38 +463,52 @@ def get_datastores(cluster_id):
         shared_storages = {}
         local_storages = {}
         
+        # MK: Apr 2026 — per-node try/except so one offline storage doesn't block all (#292)
         for node in nodes:
-            node_storage_url = f"https://{host}:8006/api2/json/nodes/{node}/storage"
-            node_storage_response = manager._create_session().get(node_storage_url, timeout=5)
-            
-            if node_storage_response.status_code == 200:
-                for storage in node_storage_response.json().get('data', []):
-                    storage_name = storage.get('storage')
-                    config = storage_configs.get(storage_name, {})
-                    is_shared = config.get('shared', 0) == 1
-                    
-                    storage_info = {
-                        'storage': storage_name,
-                        'type': storage.get('type', config.get('type', 'unknown')),
-                        'content': storage.get('content', config.get('content', '')),
-                        'total': storage.get('total', 0),
-                        'used': storage.get('used', 0),
-                        'avail': storage.get('avail', 0),
-                        'used_fraction': storage.get('used_fraction', 0),
-                        'active': storage.get('active', 1),
-                        'enabled': storage.get('enabled', 1),
-                        'shared': is_shared,
-                        'path': config.get('path', ''),
-                        'nodes': config.get('nodes', ''),
-                    }
-                    
-                    if is_shared:
-                        if storage_name not in shared_storages:
-                            shared_storages[storage_name] = storage_info
-                    else:
-                        if node not in local_storages:
-                            local_storages[node] = []
-                        local_storages[node].append(storage_info)
+            try:
+                node_storage_url = f"https://{host}:8006/api2/json/nodes/{node}/storage"
+                node_storage_response = manager._create_session().get(node_storage_url, timeout=10)
+
+                if node_storage_response.status_code == 200:
+                    for storage in node_storage_response.json().get('data', []):
+                        storage_name = storage.get('storage')
+                        config = storage_configs.get(storage_name, {})
+                        is_shared = config.get('shared', 0) == 1
+
+                        storage_info = {
+                            'storage': storage_name,
+                            'type': storage.get('type', config.get('type', 'unknown')),
+                            'content': storage.get('content', config.get('content', '')),
+                            'total': storage.get('total', 0),
+                            'used': storage.get('used', 0),
+                            'avail': storage.get('avail', 0),
+                            'used_fraction': storage.get('used_fraction', 0),
+                            'active': storage.get('active', 1),
+                            'enabled': storage.get('enabled', 1),
+                            'shared': is_shared,
+                            'path': config.get('path', ''),
+                            'nodes': config.get('nodes', ''),
+                        }
+
+                        if is_shared:
+                            if storage_name not in shared_storages:
+                                shared_storages[storage_name] = storage_info
+                        else:
+                            if node not in local_storages:
+                                local_storages[node] = []
+                            local_storages[node].append(storage_info)
+            except Exception as node_err:
+                logging.debug(f"[API] Skipping storage fetch for node {node}: {node_err}")
+
+        # also include storages from config that might not have appeared (offline storages)
+        for sname, cfg in storage_configs.items():
+            if sname not in shared_storages and cfg.get('shared', 0) == 1:
+                shared_storages[sname] = {
+                    'storage': sname, 'type': cfg.get('type', 'unknown'),
+                    'content': cfg.get('content', ''), 'total': 0, 'used': 0, 'avail': 0,
+                    'used_fraction': 0, 'active': 0, 'enabled': cfg.get('disable', 0) != 1,
+                    'shared': True, 'path': cfg.get('path', ''), 'nodes': cfg.get('nodes', ''),
+                }
         
         return jsonify({
             'shared': list(shared_storages.values()),

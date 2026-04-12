@@ -1479,8 +1479,8 @@
                                     placeholder={t('searchByNameOrId')}
                                     value={search}
                                     onChange={(e) => setSearch(e.target.value)}
-                                    className="pl-7 pr-3 py-1 text-[13px] bg-transparent border text-white placeholder-gray-600 focus:outline-none w-56"
-                                    style={{borderColor: 'var(--corp-border-medium)', borderRadius: '2px'}}
+                                    className="pr-3 py-1 text-[13px] bg-transparent border text-white placeholder-gray-600 focus:outline-none w-56"
+                                    style={{paddingLeft: '28px', borderColor: 'var(--corp-border-medium)', borderRadius: '2px'}}
                                 />
                             </div>
                             <span className="corp-toolbar-divider" />

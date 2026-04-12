@@ -1265,9 +1265,10 @@
                                     key={section.id}
                                     onClick={() => setActiveSection(section.id)}
                                     className={`corp-subnav-item ${activeSection === section.id ? 'active' : ''}`}
+                                    style={{display: 'flex', alignItems: 'center', gap: 6}}
                                 >
-                                    <section.icon style={{width: 14, height: 14, display: 'inline', marginRight: 6}} />
-                                    {t(section.labelKey)}
+                                    <section.icon style={{width: 14, height: 14, flexShrink: 0}} />
+                                    <span>{t(section.labelKey)}</span>
                                 </button>
                             ))}
                         </div>

@@ -931,19 +931,19 @@
                     {/* Tab Switcher */}
                     {isCorporate ? (
                         <div className="corp-tab-strip">
-                            <button onClick={() => setActiveTab('browse')} className={activeTab === 'browse' ? 'active' : ''}>
-                                <Icons.Folder style={{width: 14, height: 14, display: 'inline', marginRight: 6}} />
-                                {t('browse') || 'Browse'}
+                            <button onClick={() => setActiveTab('browse')} className={activeTab === 'browse' ? 'active' : ''} style={{display:'flex',alignItems:'center',gap:6}}>
+                                <Icons.Folder style={{width: 14, height: 14, flexShrink: 0}} />
+                                <span>{t('browse') || 'Browse'}</span>
                             </button>
-                            <button onClick={() => { setActiveTab('balancing'); fetchStorageClusters(); }} className={activeTab === 'balancing' ? 'active' : ''}>
-                                <Icons.Zap style={{width: 14, height: 14, display: 'inline', marginRight: 6}} />
-                                Storage Balancing
+                            <button onClick={() => { setActiveTab('balancing'); fetchStorageClusters(); }} className={activeTab === 'balancing' ? 'active' : ''} style={{display:'flex',alignItems:'center',gap:6}}>
+                                <Icons.Zap style={{width: 14, height: 14, flexShrink: 0}} />
+                                <span>Storage Balancing</span>
                             </button>
                             <button onClick={() => {
                                 setActiveTab('sync'); refreshSyncStatus();
-                            }} className={activeTab === 'sync' ? 'active' : ''}>
-                                <Icons.RefreshCw style={{width: 14, height: 14, display: 'inline', marginRight: 6}} />
-                                {t('isoSync') || 'ISO Sync'}
+                            }} className={activeTab === 'sync' ? 'active' : ''} style={{display:'flex',alignItems:'center',gap:6}}>
+                                <Icons.RefreshCw style={{width: 14, height: 14, flexShrink: 0}} />
+                                <span>{t('isoSync') || 'ISO Sync'}</span>
                             </button>
                         </div>
                     ) : (
@@ -1009,6 +1009,17 @@
                                     </button>
                                 </div>
                             </div>
+                            {/* LW: auto-sync toggle */}
+                            <div className="flex items-center gap-3 mb-4 p-3 bg-proxmox-dark rounded-lg border border-proxmox-border">
+                                <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                                    <input type="checkbox" className="rounded"
+                                        checked={localStorage.getItem(`autosync-${clusterId}`) === 'true'}
+                                        onChange={e => { localStorage.setItem(`autosync-${clusterId}`, e.target.checked); addToast(e.target.checked ? 'Auto-sync enabled — new uploads will be distributed automatically' : 'Auto-sync disabled', 'success'); }}
+                                    />
+                                    {t('autoSync') || 'Auto-Sync after Upload'}
+                                </label>
+                                <span className="text-xs text-gray-600">{t('autoSyncDesc') || 'Automatically distribute new ISOs/templates to all nodes after upload'}</span>
+                            </div>
 
                             {syncLoading && !syncStatus ? (
                                 <div className="flex justify-center py-12"><Icons.RotateCw className="animate-spin w-8 h-8 text-gray-500" /></div>
@@ -1022,7 +1033,7 @@
                                                 {syncStatus.nodes?.map(n => (
                                                     <th key={n} className="text-center py-2 px-2 text-gray-400 font-medium text-xs">{n}</th>
                                                 ))}
-                                                <th className="text-right py-2 px-3 text-gray-400 font-medium">Action</th>
+                                                <th className="text-center py-2 px-3 text-gray-400 font-medium" style={{minWidth: 70}}>Action</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -1040,7 +1051,7 @@
                                                                 {nodeMap[n] ? <span className="text-green-400">✓</span> : <span className="text-red-400/60">✗</span>}
                                                             </td>
                                                         ))}
-                                                        <td className="py-2 px-3 text-right">
+                                                        <td className="py-2 px-3 text-center">
                                                             {allSynced ? (
                                                                 <span className="text-xs text-green-400/70">{t('synced') || 'Synced'}</span>
                                                             ) : sourceNode ? (

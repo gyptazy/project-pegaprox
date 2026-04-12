@@ -483,7 +483,7 @@ function renderFilterBar(){
     return `<div class="filter-bar">
         <div class="search-wrap">
             <span class="search-icon">&#x1F50D;</span>
-            <input type="text" class="search-input" id="vm-search" placeholder="Search by name or VMID..." value="${esc(S.searchQuery)}">
+            <input type="text" class="search-input" id="vm-search" placeholder="Search by name..." value="${esc(S.searchQuery)}">
         </div>
         <button class="filter-btn ${S.filterStatus==='all'?'active':''}" data-filter="all">All</button>
         <button class="filter-btn ${S.filterStatus==='running'?'active':''}" data-filter="running">Running</button>
@@ -571,7 +571,7 @@ function renderDash(){
                     <span class="badge ${on?'badge-running':'badge-stopped'}">${on?'&#x25CF; Running':'&#x25CB; Stopped'}</span>
                     <span class="font-medium">${escName}</span>
                 </div>
-                <span class="text-xs" style="color:var(--muted)">${esc(v.type).toUpperCase()} ${esc(String(v.vmid))}${uptime?' &middot; '+esc(uptime):''}</span>
+                <span class="text-xs" style="color:var(--muted)">${v.type==='lxc'?'Container':'VM'}${uptime?' &middot; '+esc(uptime):''}</span>
             </div>
             ${c.show_resource_usage&&on?`<div style="margin-bottom:12px">
                 <div style="margin-bottom:8px">
@@ -651,8 +651,9 @@ function renderConsoleModal(){
     const wsUrl=`${proto}//${window.location.hostname}:${wsPort}/api/clusters/${encodeURIComponent(m.vm.cluster_id)}/vms/${encodeURIComponent(m.vm.node)}/${encodeURIComponent(m.vm.type)}/${m.vm.vmid}/vncwebsocket?token=${encodeURIComponent(m.ws_token||'')}`;
     const statusLabel = m.vncStatus === 'connected' ? 'Connected' : m.vncStatus === 'connecting' ? 'Connecting...' : 'Disconnected';
     const dotClass = m.vncStatus === 'connected' ? 'connected' : m.vncStatus === 'connecting' ? 'connecting' : 'disconnected';
+    // LW: #283 — larger console modal, responsive to viewport
     return`<div class="modal-bg" onclick="closeModal()">
-        <div style="width:100%;max-width:56rem;margin:0 16px;height:80vh" onclick="event.stopPropagation()">
+        <div style="width:calc(100% - 32px);max-width:80rem;margin:0 auto;height:calc(100vh - 48px)" onclick="event.stopPropagation()">
             <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:var(--card);border:1px solid var(--border);border-bottom:none;border-radius:12px 12px 0 0">
                 <div style="display:flex;align-items:center;gap:8px" class="text-sm">
                     <span class="font-medium">${esc(m.vm.name)}</span>
@@ -660,6 +661,7 @@ function renderConsoleModal(){
                     <span class="text-xs" style="margin-left:8px"><span class="vnc-status-dot ${dotClass}"></span>${esc(statusLabel)}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:6px">
+                    <button class="btn btn-ghost text-xs" style="padding:2px 10px" onclick="pVncCtrlAltDel()" title="Send Ctrl+Alt+Del">Ctrl+Alt+Del</button>
                     <button class="btn btn-ghost text-xs" style="padding:2px 10px" onclick="pVncFullscreen()" title="Fullscreen">&#x26F6;</button>
                     <button class="btn btn-ghost text-xs" style="padding:2px 10px" onclick="closeModal()">&#x2715; Close</button>
                 </div>
@@ -817,6 +819,7 @@ async function initVNC(container){
     try{
         const rfb=new window.RFB(container,wsUrl,{credentials:{password}});
         rfb.scaleViewport=true;rfb.resizeSession=true;
+        window._portalRfb=rfb;  // LW: store ref for Ctrl+Alt+Del button
         rfb.addEventListener('connect',()=>{
             if(overlay)overlay.style.display='none';
             if(S.modal&&S.modal.type==='console'){S.modal.vncStatus='connected';/* update status dot without full re-render */
@@ -857,6 +860,9 @@ window.pVncFullscreen=function(){
         if(el.requestFullscreen)el.requestFullscreen();
         else if(el.webkitRequestFullscreen)el.webkitRequestFullscreen();
     }
+};
+window.pVncCtrlAltDel=function(){
+    if(window._portalRfb)window._portalRfb.sendCtrlAltDel();
 };
 
 // auto-refresh every 30s
