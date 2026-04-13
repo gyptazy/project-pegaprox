@@ -2235,6 +2235,7 @@
             const [pbsSelectedGroup, setPbsSelectedGroup] = useState(null);
             const [pbsTaskLog, setPbsTaskLog] = useState(null);
             const [pbsNamespaces, setPbsNamespaces] = useState([]);
+            const [pbsSelectedNs, setPbsSelectedNs] = useState('');  // LW: #301 selected namespace
             const [pbsDisks, setPbsDisks] = useState([]);
             const [pbsRemotes, setPbsRemotes] = useState([]);
             const [pbsNotifications, setPbsNotifications] = useState({ targets: [], matchers: [] });
@@ -4835,13 +4836,19 @@
                 } catch (e) { console.warn('PBS datastores error:', e); }
             };
             
-            const fetchPBSSnapshots = async (pbsId, store, backupType, backupId) => {
+            const fetchPBSSnapshots = async (pbsId, store, backupType, backupId, ns) => {
                 try {
                     // #143: pass group filter to avoid fetching all snapshots (can be thousands)
                     let url = `${API_URL}/pbs/${pbsId}/datastores/${store}/snapshots`;
+                    const params = [];
                     if (backupType && backupId) {
-                        url += `?backup-type=${encodeURIComponent(backupType)}&backup-id=${encodeURIComponent(backupId)}`;
+                        params.push(`backup-type=${encodeURIComponent(backupType)}`);
+                        params.push(`backup-id=${encodeURIComponent(backupId)}`);
                     }
+                    // LW: #301 — pass namespace to API
+                    const activeNs = ns !== undefined ? ns : pbsSelectedNs;
+                    if (activeNs) params.push(`ns=${encodeURIComponent(activeNs)}`);
+                    if (params.length) url += '?' + params.join('&');
                     const resp = await authFetch(url);
                     if (resp && resp.ok) {
                         setPbsSnapshots(await resp.json());
@@ -4853,9 +4860,11 @@
                 } catch (e) { console.warn('PBS snapshots error:', e); setPbsSnapshots([]); }
             };
 
-            const fetchPBSGroups = async (pbsId, store) => {
+            const fetchPBSGroups = async (pbsId, store, ns) => {
                 try {
-                    const resp = await authFetch(`${API_URL}/pbs/${pbsId}/datastores/${store}/groups`);
+                    const activeNs = ns !== undefined ? ns : pbsSelectedNs;
+                    const nsParam = activeNs ? `?ns=${encodeURIComponent(activeNs)}` : '';
+                    const resp = await authFetch(`${API_URL}/pbs/${pbsId}/datastores/${store}/groups${nsParam}`);
                     if (resp && resp.ok) {
                         setPbsGroups(await resp.json());
                     } else if (resp) {
@@ -11406,7 +11415,7 @@
                                                         const total = ds.used && ds.avail ? ds.used + ds.avail : 1;
                                                         const pct = total > 0 ? ((used / total) * 100).toFixed(0) : 0;
                                                         return (
-                                                            <button key={name} onClick={() => { setPbsSelectedStore(name); setPbsSelectedGroup(null); }}
+                                                            <button key={name} onClick={() => { setPbsSelectedStore(name); setPbsSelectedGroup(null); setPbsSelectedNs(''); }}
                                                                 className={`w-full text-left px-3 py-2.5 rounded-xl transition-all ${
                                                                     pbsSelectedStore === name ? 'bg-blue-500/20 border border-blue-500/30 text-white' : 'bg-proxmox-card border border-proxmox-border text-gray-300 hover:border-blue-500/20'
                                                                 }`}>
@@ -11450,7 +11459,16 @@
                                                                         {pbsNamespaces.length > 0 && (
                                                                             <div className="bg-proxmox-card border border-proxmox-border rounded-xl p-3 flex items-center gap-2">
                                                                                 <span className="text-xs text-gray-500">Namespace:</span>
-                                                                                <select className="bg-proxmox-dark border border-proxmox-border rounded px-2 py-1 text-sm text-white" defaultValue="">
+                                                                                <select className="bg-proxmox-dark border border-proxmox-border rounded px-2 py-1 text-sm text-white"
+                                                                                    value={pbsSelectedNs}
+                                                                                    onChange={e => {
+                                                                                        const ns = e.target.value;
+                                                                                        setPbsSelectedNs(ns);
+                                                                                        setPbsGroups([]);
+                                                                                        setPbsSnapshots([]);
+                                                                                        fetchPBSGroups(selectedPBS.id, pbsSelectedStore, ns);
+                                                                                    }}
+                                                                                >
                                                                                     <option value="">Root</option>
                                                                                     {pbsNamespaces.map((ns, i) => <option key={i} value={ns.ns || ns.name}>{ns.ns || ns.name}</option>)}
                                                                                 </select>

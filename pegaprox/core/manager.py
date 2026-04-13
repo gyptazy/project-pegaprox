@@ -1163,29 +1163,48 @@ class PegaProxManager:
             return []
 
     def _fetch_lxc_ips(self, node: str, vmid: int) -> list:
-        """Fetch IP addresses for a running LXC container via /interfaces endpoint.
-        Returns IPv4 addresses first, then IPv6. Returns [] on any error."""
+        """Fetch IP addresses for a running LXC container.
+        MK: Apr 2026 — tries /interfaces first, falls back to config + status (#300)
+        """
         try:
+            # method 1: /interfaces — preferred, returns all IPs
             url = f"https://{self.host}:8006/api2/json/nodes/{node}/lxc/{vmid}/interfaces"
             resp = self._create_session().get(url, timeout=8)
-            if resp.status_code != 200:
-                return []
-            interfaces = resp.json().get('data', [])
-            ipv4s, ipv6s = [], []
-            for iface in interfaces:
-                if iface.get('name') == 'lo':
-                    continue
-                inet = iface.get('inet', '')
-                if inet:
-                    ip = inet.split('/')[0]
-                    if not ip.startswith('127.'):
-                        ipv4s.append(ip)
-                inet6 = iface.get('inet6', '')
-                if inet6:
-                    ip = inet6.split('/')[0]
-                    if ip != '::1' and not ip.lower().startswith('fe80:'):
-                        ipv6s.append(ip)
-            return ipv4s + ipv6s
+            if resp.status_code == 200:
+                interfaces = resp.json().get('data', [])
+                ipv4s, ipv6s = [], []
+                for iface in interfaces:
+                    if iface.get('name') == 'lo':
+                        continue
+                    inet = iface.get('inet', '')
+                    if inet:
+                        ip = inet.split('/')[0]
+                        if not ip.startswith('127.'):
+                            ipv4s.append(ip)
+                    inet6 = iface.get('inet6', '')
+                    if inet6:
+                        ip = inet6.split('/')[0]
+                        if ip != '::1' and not ip.lower().startswith('fe80:'):
+                            ipv6s.append(ip)
+                if ipv4s or ipv6s:
+                    return ipv4s + ipv6s
+
+            # method 2: /config — extract static IPs from net0..net9
+            cfg_url = f"https://{self.host}:8006/api2/json/nodes/{node}/lxc/{vmid}/config"
+            cfg_resp = self._create_session().get(cfg_url, timeout=5)
+            if cfg_resp.status_code == 200:
+                cfg = cfg_resp.json().get('data', {})
+                import re
+                for key in sorted(cfg.keys()):
+                    if not key.startswith('net'):
+                        continue
+                    val = cfg[key]
+                    # format: name=eth0,bridge=vmbr0,ip=10.0.0.5/24,...
+                    m = re.search(r'ip=(\d+\.\d+\.\d+\.\d+)', str(val))
+                    if m:
+                        return [m.group(1)]
+
+            return []
         except Exception:
             return []
 
