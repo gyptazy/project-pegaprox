@@ -2567,6 +2567,9 @@
             const [cveScanLoading, setCveScanLoading] = useState(false);
             const [cveExpandedNodes, setCveExpandedNodes] = useState({});
             const [debsecanInstalling, setDebsecanInstalling] = useState(false);
+            const [complianceResults, setComplianceResults] = useState(null);
+            const [complianceScanLoading, setComplianceScanLoading] = useState(false);
+            const [complianceExpandedNodes, setComplianceExpandedNodes] = useState({});
 
             // MK: clear stale CVE results when switching clusters
             useEffect(() => {
@@ -2574,6 +2577,9 @@
                 setCveScanLoading(false);
                 setCveExpandedNodes({});
                 setDebsecanInstalling(false);
+                setComplianceResults(null);
+                setComplianceScanLoading(false);
+                setComplianceExpandedNodes({});
             }, [selectedCluster?.id]);
             
             // Auth fetch helper - simple version without timeout abort
@@ -4002,6 +4008,35 @@
 
             const toggleCveNode = (nodeName) => {
                 setCveExpandedNodes(prev => ({ ...prev, [nodeName]: !prev[nodeName] }));
+            };
+
+            const runComplianceScan = async (clusterId = null) => {
+                const clId = clusterId || selectedCluster?.id;
+                if (!clId) return;
+
+                setComplianceScanLoading(true);
+                setComplianceResults(null);
+                try {
+                    const response = await authFetch(`${API_URL}/clusters/${clId}/reports/compliance-scan`, {
+                        method: 'POST'
+                    });
+                    if (response && response.ok) {
+                        const data = await response.json();
+                        setComplianceResults(data);
+                    } else {
+                        const errData = await response?.json().catch(() => null);
+                        const reason = errData?.error || errData?.message || `HTTP ${response?.status}`;
+                        addToast((t('complianceScanFailed') || 'Compliance scan failed') + ': ' + reason, 'error');
+                    }
+                } catch (err) {
+                    console.error('Compliance scan error:', err);
+                    addToast((t('complianceScanFailed') || 'Compliance scan failed') + ': ' + err.message, 'error');
+                }
+                setComplianceScanLoading(false);
+            };
+
+            const toggleComplianceNode = (nodeName) => {
+                setComplianceExpandedNodes(prev => ({ ...prev, [nodeName]: !prev[nodeName] }));
             };
 
             const installDebsecan = async (clusterId = null) => {
@@ -9799,7 +9834,8 @@
                                                 <div className="flex gap-2 border-b border-proxmox-border pb-2">
                                                     {[
                                                         { id: 'summary', label: t('summary') || 'Summary', icon: Icons.BarChart },
-                                                        { id: 'cve', label: t('cveScanner') || 'CVE Scanner', icon: Icons.Shield }
+                                                        { id: 'cve', label: t('cveScanner') || 'CVE Scanner', icon: Icons.Shield },
+                                                        { id: 'compliance', label: t('complianceScanner') || 'Compliance Scanner', icon: Icons.CheckCircle }
                                                     ].map(tab => (
                                                         <button
                                                             key={tab.id}
@@ -10090,6 +10126,158 @@
                                                                         </div>
                                                                     </div>
                                                                 )}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+
+                                                {/* Compliance Scanner Sub-Tab */}
+                                                {reportSubTab === 'compliance' && (
+                                                    <div className="space-y-6">
+                                                        <div className="flex justify-between items-center">
+                                                            <p className="text-sm text-gray-400">
+                                                                {t('complianceScanDesc') || 'Checks each node for at least two NTP sources in /etc/chrony/chrony.conf and at least two DNS resolvers in /etc/resolv.conf.'}
+                                                            </p>
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    onClick={() => runComplianceScan()}
+                                                                    disabled={complianceScanLoading}
+                                                                    className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 ${
+                                                                        complianceScanLoading
+                                                                            ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                                                                            : 'bg-proxmox-orange hover:bg-orange-600 text-white'
+                                                                    }`}
+                                                                >
+                                                                    <Icons.CheckCircle className={`w-4 h-4 ${complianceScanLoading ? 'animate-pulse' : ''}`} />
+                                                                    {complianceScanLoading ? (t('scanning') || 'Scanning...') : (t('runComplianceScan') || 'Run Compliance Scan')}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+
+                                                        {complianceScanLoading && (
+                                                            <div className="flex items-center justify-center py-16">
+                                                                <div className="text-center">
+                                                                    <Icons.RotateCw className="animate-spin w-10 h-10 text-gray-500 mx-auto mb-3" />
+                                                                    <p className="text-gray-400 text-sm">{t('complianceScanRunning') || 'Running compliance scan on all nodes...'}</p>
+                                                                    <p className="text-gray-600 text-xs mt-1">{t('scanTakesMinute') || 'This may take a minute'}</p>
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {complianceResults && !complianceScanLoading && (
+                                                            <div id="compliance-report-content" className="space-y-4">
+                                                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                                                    <div className="bg-proxmox-card border border-proxmox-border rounded-xl p-4 text-center">
+                                                                        <div className="text-3xl font-bold text-blue-400">{complianceResults.summary?.nodes_scanned || 0}</div>
+                                                                        <div className="text-sm text-gray-500">{t('nodesScanned') || 'Nodes Scanned'}</div>
+                                                                    </div>
+                                                                    <div className="bg-proxmox-card border border-proxmox-border rounded-xl p-4 text-center">
+                                                                        <div className={`text-3xl font-bold ${(complianceResults.summary?.nodes_compliant || 0) === (complianceResults.summary?.nodes_scanned || 0) ? 'text-green-400' : 'text-orange-400'}`}>
+                                                                            {complianceResults.summary?.nodes_compliant || 0}/{complianceResults.summary?.nodes_scanned || 0}
+                                                                        </div>
+                                                                        <div className="text-sm text-gray-500">{t('compliantNodes') || 'Compliant Nodes'}</div>
+                                                                    </div>
+                                                                    <div className="bg-proxmox-card border border-proxmox-border rounded-xl p-4 text-center">
+                                                                        <div className={`text-3xl font-bold ${(complianceResults.summary?.failed_checks || 0) > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                                                            {complianceResults.summary?.failed_checks || 0}
+                                                                        </div>
+                                                                        <div className="text-sm text-gray-500">{t('failedChecks') || 'Failed Checks'}</div>
+                                                                    </div>
+                                                                    <div className="bg-proxmox-card border border-proxmox-border rounded-xl p-4 text-center">
+                                                                        <div className="text-3xl font-bold text-cyan-400">{complianceResults.summary?.passed_checks || 0}/{complianceResults.summary?.total_checks || 0}</div>
+                                                                        <div className="text-sm text-gray-500">{t('checksPassed') || 'Checks Passed'}</div>
+                                                                    </div>
+                                                                </div>
+
+                                                                <div className="space-y-3">
+                                                                    {(complianceResults.nodes || []).map((node, idx) => {
+                                                                        const nodePassed = node.summary?.passed;
+                                                                        const hasError = !!node.error;
+                                                                        return (
+                                                                            <div key={idx} className="bg-proxmox-card border border-proxmox-border rounded-xl overflow-hidden">
+                                                                                <button
+                                                                                    onClick={() => !hasError && toggleComplianceNode(node.node)}
+                                                                                    className={`w-full p-4 flex items-center justify-between text-left ${!hasError ? 'hover:bg-proxmox-hover/50 transition-colors' : ''}`}
+                                                                                    disabled={hasError}
+                                                                                >
+                                                                                    <div className="flex items-center gap-3 min-w-0">
+                                                                                        {hasError ? (
+                                                                                            <Icons.AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0" />
+                                                                                        ) : nodePassed ? (
+                                                                                            <Icons.CheckCircle className="w-5 h-5 text-green-400 flex-shrink-0" />
+                                                                                        ) : (
+                                                                                            <Icons.XCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                                                                                        )}
+                                                                                        <div className="min-w-0">
+                                                                                            <div className="font-medium text-white truncate">{node.node}</div>
+                                                                                            <div className="text-sm text-gray-400">
+                                                                                                {hasError
+                                                                                                    ? node.error
+                                                                                                    : nodePassed
+                                                                                                        ? (t('compliancePassed') || 'All compliance checks passed')
+                                                                                                        : `${node.summary?.failed_checks?.length || 0} ${t('checksFailed') || 'checks failed'}`}
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    {!hasError && (
+                                                                                        <div className="flex items-center gap-3 ml-4">
+                                                                                            <span className={`text-xs px-2 py-0.5 rounded ${nodePassed ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                                                                                                {nodePassed ? (t('compliant') || 'Compliant') : (t('nonCompliant') || 'Non-compliant')}
+                                                                                            </span>
+                                                                                            <Icons.ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${complianceExpandedNodes[node.node] ? 'rotate-180' : ''}`} />
+                                                                                        </div>
+                                                                                    )}
+                                                                                </button>
+
+                                                                                {complianceExpandedNodes[node.node] && !hasError && (
+                                                                                    <div className="border-t border-proxmox-border">
+                                                                                        <div className="px-4 py-2 bg-proxmox-dark/50 text-xs text-gray-500">
+                                                                                            {t('scannedAt') || 'Scanned at'}: {node.timestamp ? new Date(node.timestamp).toLocaleTimeString() : '-'}
+                                                                                        </div>
+                                                                                        <div className="divide-y divide-proxmox-border/50">
+                                                                                            {Object.entries(node.checks || {}).map(([checkId, check]) => (
+                                                                                                <div key={checkId} className="p-4 flex items-start justify-between gap-4">
+                                                                                                    <div className="min-w-0">
+                                                                                                        <div className="flex items-center gap-2 text-sm font-medium text-white">
+                                                                                                            {check.passed ? (
+                                                                                                                <Icons.CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
+                                                                                                            ) : (
+                                                                                                                <Icons.XCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                                                                                                            )}
+                                                                                                            <span>{check.label}</span>
+                                                                                                        </div>
+                                                                                                        <div className="text-xs text-gray-500 mt-1">{check.path}</div>
+                                                                                                        <div className="text-sm text-gray-300 mt-2">
+                                                                                                            {(check.values || []).length > 0 ? (check.values || []).join(', ') : (t('noneFound') || 'None found')}
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                    <div className="text-right flex-shrink-0">
+                                                                                                        <div className={`text-sm font-semibold ${check.passed ? 'text-green-400' : 'text-red-400'}`}>
+                                                                                                            {check.found || 0}/{check.expected_min || 0}
+                                                                                                        </div>
+                                                                                                        <div className="text-xs text-gray-500">{t('required') || 'Required'}: {check.expected_min || 0}</div>
+                                                                                                    </div>
+                                                                                                </div>
+                                                                                            ))}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                )}
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+
+                                                                <div className="text-xs text-gray-600 text-center">
+                                                                    {t('scannedAt') || 'Scanned at'} {new Date(complianceResults.scanned_at).toLocaleString()}
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {!complianceResults && !complianceScanLoading && (
+                                                            <div className="text-center py-16">
+                                                                <Icons.CheckCircle className="w-16 h-16 text-gray-700 mx-auto mb-4" />
+                                                                <p className="text-gray-400 mb-2">{t('noComplianceResults') || 'No compliance scan results yet'}</p>
+                                                                <p className="text-gray-600 text-sm">{t('noComplianceResultsDesc') || 'Click "Run Compliance Scan" to validate NTP and DNS redundancy on all nodes'}</p>
                                                             </div>
                                                         )}
                                                     </div>

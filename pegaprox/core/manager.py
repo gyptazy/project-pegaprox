@@ -12250,6 +12250,90 @@ echo "AGENT_INSTALLED_OK"
         result['security_count'] = sum(1 for p in result['packages'] if p['security'])
         return result
 
+    def scan_node_compliance(self, node_name):
+        """Check node compliance for required NTP and DNS redundancy."""
+        scan_cmd = (
+            "echo '---CHRONY---' && cat /etc/chrony/chrony.conf 2>/dev/null ; "
+            "echo '---RESOLV---' && cat /etc/resolv.conf 2>/dev/null ; "
+            "echo '---END---'"
+        )
+
+        output = self._ssh_node_output(node_name, scan_cmd, timeout=60)
+        if not output:
+            return {'error': 'SSH connection failed', 'node': node_name}
+
+        chrony_lines = []
+        resolv_lines = []
+        section = None
+        for raw_line in output.splitlines():
+            stripped = raw_line.strip()
+            if stripped.startswith('---') and stripped.endswith('---'):
+                section = stripped.strip('-')
+                continue
+            if section == 'CHRONY':
+                chrony_lines.append(raw_line)
+            elif section == 'RESOLV':
+                resolv_lines.append(raw_line)
+
+        ntp_sources = []
+        ntp_seen = set()
+        for line in chrony_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            parts = shlex.split(stripped, comments=True)
+            if len(parts) >= 2 and parts[0] in ('server', 'pool', 'peer'):
+                source = parts[1]
+                if source not in ntp_seen:
+                    ntp_seen.add(source)
+                    ntp_sources.append(source)
+
+        dns_resolvers = []
+        dns_seen = set()
+        for line in resolv_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#') or stripped.startswith(';'):
+                continue
+            parts = stripped.split()
+            if len(parts) >= 2 and parts[0] == 'nameserver':
+                resolver = parts[1]
+                if resolver not in dns_seen:
+                    dns_seen.add(resolver)
+                    dns_resolvers.append(resolver)
+
+        checks = {
+            'ntp_sources': {
+                'label': 'At least two different NTP sources in /etc/chrony/chrony.conf',
+                'passed': len(ntp_sources) >= 2,
+                'expected_min': 2,
+                'found': len(ntp_sources),
+                'values': ntp_sources,
+                'path': '/etc/chrony/chrony.conf',
+            },
+            'dns_resolvers': {
+                'label': 'At least two different DNS resolvers in /etc/resolv.conf',
+                'passed': len(dns_resolvers) >= 2,
+                'expected_min': 2,
+                'found': len(dns_resolvers),
+                'values': dns_resolvers,
+                'path': '/etc/resolv.conf',
+            },
+        }
+
+        failed_checks = [check_id for check_id, check in checks.items() if not check['passed']]
+
+        return {
+            'node': node_name,
+            'timestamp': datetime.now().isoformat(),
+            'checks': checks,
+            'summary': {
+                'passed': len(failed_checks) == 0,
+                'passed_checks': len(checks) - len(failed_checks),
+                'total_checks': len(checks),
+                'failed_checks': failed_checks,
+            },
+        }
+
     # CIS hardening checks - MK Mar 2026
     # each key maps to a shell snippet that returns 0 if already hardened
     CIS_CHECKS = {
@@ -13083,4 +13167,3 @@ echo DONE""",
             self.thread.join(timeout=5)
         self.running = False
         self.logger.info(f"Stopped PegaProx manager for {self.config.name}")
-

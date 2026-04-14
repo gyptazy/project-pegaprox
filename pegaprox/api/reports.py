@@ -582,6 +582,80 @@ def install_debsecan(cluster_id):
     })
 
 
+@bp.route('/api/clusters/<cluster_id>/reports/compliance-scan', methods=['POST'])
+@require_auth(perms=['node.view'])
+def scan_cluster_compliance(cluster_id):
+    """Scan all nodes in a cluster for basic compliance requirements."""
+    ok, err = check_cluster_access(cluster_id)
+    if not ok:
+        return err
+
+    if cluster_id not in cluster_managers:
+        return jsonify({'error': 'Cluster not found'}), 404
+
+    mgr = cluster_managers[cluster_id]
+    if not mgr.is_connected:
+        return jsonify({'error': 'Cluster not connected'}), 503
+
+    try:
+        node_status = mgr.get_node_status()
+    except:
+        return jsonify({'error': 'Failed to get node list'}), 500
+
+    results = []
+    for node_name in node_status:
+        ns = node_status.get(node_name, {})
+        if ns.get('offline') or ns.get('status') == 'offline':
+            results.append({'node': node_name, 'error': 'Node offline'})
+            continue
+        try:
+            results.append(mgr.scan_node_compliance(node_name))
+        except Exception as e:
+            results.append({'node': node_name, 'error': str(e)})
+
+    total_checks = 0
+    total_passed_checks = 0
+    total_failed_checks = 0
+    nodes_scanned = 0
+    nodes_compliant = 0
+    offline_nodes = 0
+    error_nodes = 0
+
+    for result in results:
+        if result.get('error'):
+            if result.get('error') == 'Node offline':
+                offline_nodes += 1
+            else:
+                error_nodes += 1
+            continue
+
+        nodes_scanned += 1
+        summary = result.get('summary', {})
+        checks = result.get('checks', {})
+        total_checks += len(checks)
+        total_passed_checks += summary.get('passed_checks', 0)
+        total_failed_checks += len(summary.get('failed_checks', []))
+        if summary.get('passed'):
+            nodes_compliant += 1
+
+    return jsonify({
+        'cluster_id': cluster_id,
+        'cluster_name': getattr(mgr.config, 'name', cluster_id),
+        'scanned_at': datetime.now().isoformat(),
+        'nodes': results,
+        'summary': {
+            'nodes_total': len(results),
+            'nodes_scanned': nodes_scanned,
+            'nodes_compliant': nodes_compliant,
+            'offline_nodes': offline_nodes,
+            'error_nodes': error_nodes,
+            'total_checks': total_checks,
+            'passed_checks': total_passed_checks,
+            'failed_checks': total_failed_checks,
+        }
+    })
+
+
 # ============================================
 # CIS Hardening Endpoints - MK Mar 2026
 # ============================================
