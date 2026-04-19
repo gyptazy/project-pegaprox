@@ -8322,7 +8322,18 @@
                                                     const haNodes = Object.values(clusterMetrics).filter(m => m && m.ha_active).length;
                                                     // #252: use quorate from PVE API (accounts for QDevice votes)
                                                     const clusterStatus = allClusterMetrics[selectedCluster.id]?.data?.cluster;
+                                                    const isSingleNodeCluster = totalNodes === 1;
                                                     const isQuorate = clusterStatus?.quorate !== undefined ? clusterStatus.quorate : onlineCount > (totalNodes || onlineCount) / 2;
+                                                    const quorumBadgeStyle = isSingleNodeCluster
+                                                        ? {background: 'rgba(245,158,11,0.12)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.25)', fontSize: 11, padding: '0 5px'}
+                                                        : isQuorate
+                                                            ? {background: 'rgba(96,181,21,0.12)', color: '#60b515', border: '1px solid rgba(96,181,21,0.25)', fontSize: 11, padding: '0 5px'}
+                                                            : {background: 'rgba(245,79,71,0.12)', color: '#f54f47', border: '1px solid rgba(245,79,71,0.25)', fontSize: 11, padding: '0 5px'};
+                                                    const quorumBadgeLabel = isSingleNodeCluster
+                                                        ? t('quorumNotPossible')
+                                                        : isQuorate
+                                                            ? t('quorumOk')
+                                                            : t('quorumLost');
                                                     return (
                                                         <div className="corp-services-bar">
                                                             <div className="corp-svc-item">
@@ -8333,10 +8344,7 @@
                                                             <span style={{color: 'var(--corp-divider)'}}>|</span>
                                                             <div className="corp-svc-item">
                                                                 <span className="corp-svc-label">Quorum</span>
-                                                                <span className="corp-badge" style={isQuorate
-                                                                    ? {background: 'rgba(96,181,21,0.12)', color: '#60b515', border: '1px solid rgba(96,181,21,0.25)', fontSize: 11, padding: '0 5px'}
-                                                                    : {background: 'rgba(245,79,71,0.12)', color: '#f54f47', border: '1px solid rgba(245,79,71,0.25)', fontSize: 11, padding: '0 5px'}
-                                                                }>{isQuorate ? t('quorumOk') : t('quorumLost')}</span>
+                                                                <span className="corp-badge" style={quorumBadgeStyle}>{quorumBadgeLabel}</span>
                                                             </div>
                                                             {haNodes > 0 && (<>
                                                                 <span style={{color: 'var(--corp-divider)'}}>|</span>
