@@ -8322,7 +8322,9 @@
                                                     const haNodes = Object.values(clusterMetrics).filter(m => m && m.ha_active).length;
                                                     // #252: use quorate from PVE API (accounts for QDevice votes)
                                                     const clusterStatus = allClusterMetrics[selectedCluster.id]?.data?.cluster;
-                                                    const isQuorate = clusterStatus?.quorate !== undefined ? clusterStatus.quorate : onlineCount > (totalNodes || onlineCount) / 2;
+                                                    // #326: standalone nodes have no corosync -> no quorum concept, don't show red badge
+                                                    const isStandalone = clusterStatus?.standalone === true;
+                                                    const isQuorate = clusterStatus?.quorate != null ? !!clusterStatus.quorate : onlineCount > (totalNodes || onlineCount) / 2;
                                                     return (
                                                         <div className="corp-services-bar">
                                                             <div className="corp-svc-item">
@@ -8332,11 +8334,15 @@
                                                             </div>
                                                             <span style={{color: 'var(--corp-divider)'}}>|</span>
                                                             <div className="corp-svc-item">
-                                                                <span className="corp-svc-label">Quorum</span>
-                                                                <span className="corp-badge" style={isQuorate
-                                                                    ? {background: 'rgba(96,181,21,0.12)', color: '#60b515', border: '1px solid rgba(96,181,21,0.25)', fontSize: 11, padding: '0 5px'}
-                                                                    : {background: 'rgba(245,79,71,0.12)', color: '#f54f47', border: '1px solid rgba(245,79,71,0.25)', fontSize: 11, padding: '0 5px'}
-                                                                }>{isQuorate ? t('quorumOk') : t('quorumLost')}</span>
+                                                                <span className="corp-svc-label">{isStandalone ? 'Mode' : 'Quorum'}</span>
+                                                                {isStandalone ? (
+                                                                    <span className="corp-badge" style={{background: 'rgba(56,139,253,0.12)', color: '#58a6ff', border: '1px solid rgba(56,139,253,0.25)', fontSize: 11, padding: '0 5px'}}>Standalone</span>
+                                                                ) : (
+                                                                    <span className="corp-badge" style={isQuorate
+                                                                        ? {background: 'rgba(96,181,21,0.12)', color: '#60b515', border: '1px solid rgba(96,181,21,0.25)', fontSize: 11, padding: '0 5px'}
+                                                                        : {background: 'rgba(245,79,71,0.12)', color: '#f54f47', border: '1px solid rgba(245,79,71,0.25)', fontSize: 11, padding: '0 5px'}
+                                                                    }>{isQuorate ? t('quorumOk') : t('quorumLost')}</span>
+                                                                )}
                                                             </div>
                                                             {haNodes > 0 && (<>
                                                                 <span style={{color: 'var(--corp-divider)'}}>|</span>
