@@ -647,6 +647,49 @@ def apply_hardening(cluster_id, node):
 
 
 # ============================================
+# Compliance framework mapping  -  MK Apr 2026
+# Frontend pulls these to render the compliance PDFs with real
+# CMMC / NIST / STIG / ISO / BSI control IDs instead of our internal
+# names like "pam_faillock". See pegaprox/core/compliance_mapping.py
+# ============================================
+
+@bp.route('/api/compliance/mapping', methods=['GET'])
+@require_auth()
+def compliance_mapping_api():
+    framework = (request.args.get('framework', '') or '').strip().lower()
+    from pegaprox.core import compliance_mapping as cm
+    payload_full = {
+        'family_labels':       cm.FAMILY_LABELS,
+        'mappings':            cm.FRAMEWORK_MAPPING,
+        'remediation':         cm.REMEDIATION,
+        'severity':            cm.SEVERITY,
+        'recommended_timeline': cm.RECOMMENDED_TIMELINE,
+        'priority_level':      cm.PRIORITY_LEVEL,
+        'framework_meta':      cm.FRAMEWORK_META,
+        'posture_levels':      cm.POSTURE_LEVELS,
+        'glossary':            cm.GLOSSARY,
+        'methodology':         cm.METHODOLOGY,
+    }
+    if not framework:
+        return jsonify(payload_full)
+    if framework not in cm.FRAMEWORK_MAPPING:
+        return jsonify({'error': f'unknown framework: {framework}'}), 400
+    return jsonify({
+        'framework':    framework,
+        'family_labels': cm.FAMILY_LABELS,
+        'mapping':      cm.FRAMEWORK_MAPPING[framework],
+        'remediation':  cm.REMEDIATION,
+        'severity':     cm.SEVERITY,
+        'recommended_timeline': cm.RECOMMENDED_TIMELINE,
+        'priority_level': cm.PRIORITY_LEVEL,
+        'framework_meta': cm.FRAMEWORK_META.get(framework, {}),
+        'posture_levels': cm.POSTURE_LEVELS,
+        'glossary':     cm.GLOSSARY,
+        'methodology':  cm.METHODOLOGY,
+    })
+
+
+# ============================================
 # Legacy Fallback Endpoints
 # old tags endpoints, kept for compat, these prevent 404s
 # ============================================

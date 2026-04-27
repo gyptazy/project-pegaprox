@@ -156,6 +156,24 @@ def _wrap_with_sudo(cmd):
     return f"echo {enc} | base64 -d | sudo -n bash"
 
 
+def _ssh_stderr_excerpt(stderr, max_chars=240):
+    """Last meaningful line of SSH stderr, capped.
+
+    OpenSSH dumps the full pre-auth banner (often a 70+ char asterisk border
+    followed by AUP text) BEFORE the actual error like
+    'Permission denied (publickey,password)' / 'Connection refused' /
+    'Host key verification failed'. Logging stderr[:200] then shows nothing
+    but banner. Take the last non-empty line — that's where SSH puts the
+    error. MK Apr 2026.
+    """
+    if not stderr:
+        return 'no error output'
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    if not lines:
+        return 'no error output'
+    return lines[-1][:max_chars]
+
+
 class PegaProxManager:
     """
     main cluster manager - NS
@@ -309,11 +327,11 @@ class PegaProxManager:
         if self.logger.handlers:
             self.logger.handlers.clear()
         
-        # File handler - DEBUG level (for troubleshooting). Capped at 6h of data,
-        # rotated content is discarded — see #345 / #348 (#348: shipped VM was
-        # filling its own disk on busy clusters).
+        # File handler - DEBUG level (for troubleshooting). Capped at 3h of data,
+        # rotated content is discarded — see #345 / #348. 3h because 20+ node
+        # clusters can hit ~100 MB/h, 6h was still rough on small disks.
         from pegaprox.utils.log_handler import CappedTimedFileHandler
-        fh = CappedTimedFileHandler(f"{LOG_DIR}/{cluster_id}.log", when='H', interval=6, backupCount=0)
+        fh = CappedTimedFileHandler(f"{LOG_DIR}/{cluster_id}.log", when='H', interval=3, backupCount=0)
         fh.setLevel(logging.DEBUG)
         
         # Console handler - INFO level (no DEBUG spam)
@@ -5013,7 +5031,7 @@ echo "AGENT_INSTALLED_OK"
             )
             if result.returncode == 0:
                 return result.stdout
-            self.logger.debug(f"[SSH] Command failed on {host}: {result.stderr[:200] if result.stderr else 'no error output'}")
+            self.logger.debug(f"[SSH] Command failed on {host}: {_ssh_stderr_excerpt(result.stderr)}")
             return None
         except subprocess.TimeoutExpired:
             self.logger.debug(f"[SSH] Command timed out on {host}")
@@ -5054,7 +5072,7 @@ echo "AGENT_INSTALLED_OK"
                 )
                 if result.returncode == 0:
                     return result.stdout
-                self.logger.debug(f"[SSH] Key auth failed on {host}: {result.stderr[:200] if result.stderr else 'no error output'}")
+                self.logger.debug(f"[SSH] Key auth failed on {host}: {_ssh_stderr_excerpt(result.stderr)}")
                 return None
             finally:
                 os.unlink(key_file)
@@ -5092,7 +5110,7 @@ echo "AGENT_INSTALLED_OK"
             )
             if result.returncode == 0:
                 return result.stdout
-            self.logger.debug(f"[SSH] Password auth failed on {host}: {result.stderr[:200] if result.stderr else 'no error output'}")
+            self.logger.debug(f"[SSH] Password auth failed on {host}: {_ssh_stderr_excerpt(result.stderr)}")
             return None
         except FileNotFoundError:
             self.logger.debug(f"[SSH] sshpass not installed - cannot use password auth")
@@ -12623,16 +12641,24 @@ echo DONE""",
         },
         'pw_history': {
             'check': """grep -q 'pam_pwhistory.so' /etc/pam.d/common-password 2>/dev/null && echo OK || echo FAIL""",
+            # MK Apr 2026 — bugfix: do NOT use_authtok unless pam_pwquality.so is already
+            # in the stack ahead of us. Without a prior module to set the authtok the
+            # `passwd` command dies with "Authentication token manipulation error" because
+            # pwhistory is asked to use a token that nobody set. Reported by NS while
+            # testing CIS hardening on PVE 9.
             'apply': """if ! grep -q pam_pwhistory /etc/pam.d/common-password 2>/dev/null; then
   if grep -q 'pam_unix.so' /etc/pam.d/common-password 2>/dev/null; then
     cp /etc/pam.d/common-password /etc/pam.d/common-password.bak.cis
-    sed -i '/pam_unix.so/i password    required    pam_pwhistory.so remember=24 use_authtok' /etc/pam.d/common-password
-    # verify PAM still valid, rollback if broken
-    if ! pam_tally2 --help >/dev/null 2>&1 && ! pamtester --help >/dev/null 2>&1; then
-      # no PAM test tool available, at least verify file not empty
-      if [ ! -s /etc/pam.d/common-password ]; then
-        cp /etc/pam.d/common-password.bak.cis /etc/pam.d/common-password
-      fi
+    if grep -q 'pam_pwquality.so' /etc/pam.d/common-password 2>/dev/null; then
+      PWHIST_LINE='password    required    pam_pwhistory.so remember=24 use_authtok'
+    else
+      # No pwquality yet — let pwhistory prompt itself instead of expecting a chained token.
+      PWHIST_LINE='password    required    pam_pwhistory.so remember=24'
+    fi
+    sed -i "/pam_unix.so/i $PWHIST_LINE" /etc/pam.d/common-password
+    # rollback if file ended up empty (sed misbehavior on weird locales etc.)
+    if [ ! -s /etc/pam.d/common-password ]; then
+      cp /etc/pam.d/common-password.bak.cis /etc/pam.d/common-password
     fi
   fi
 fi
@@ -12698,7 +12724,12 @@ fi
 echo DONE""",
         },
         'pw_quality': {
-            'check': """dpkg -l libpam-pwquality 2>/dev/null | grep -q '^ii' && echo OK || echo FAIL""",
+            # MK Apr 2026 — also add pam_pwquality.so to the PAM stack. Previous version
+            # only installed the package + wrote pwquality.conf which did nothing because
+            # the module was never wired into common-password. Insert BEFORE pam_pwhistory
+            # if it's already there (so pwquality runs first → sets authtok → pwhistory
+            # uses_authtok), else before pam_unix.
+            'check': """dpkg -l libpam-pwquality 2>/dev/null | grep -q '^ii' && grep -q 'pam_pwquality.so' /etc/pam.d/common-password 2>/dev/null && echo OK || echo FAIL""",
             'apply': """apt-get install -y libpam-pwquality >/dev/null 2>&1
 cat > /etc/security/pwquality.conf << 'PWEOF'
 # Lynis AUTH-9262: Password quality requirements
@@ -12712,6 +12743,90 @@ maxrepeat = 3
 gecoscheck = 1
 dictcheck = 1
 PWEOF
+if ! grep -q 'pam_pwquality.so' /etc/pam.d/common-password 2>/dev/null; then
+  if grep -q 'pam_unix.so' /etc/pam.d/common-password 2>/dev/null; then
+    cp /etc/pam.d/common-password /etc/pam.d/common-password.bak.cis-pwq
+    if grep -q 'pam_pwhistory.so' /etc/pam.d/common-password 2>/dev/null; then
+      sed -i '/pam_pwhistory.so/i password    requisite    pam_pwquality.so retry=3' /etc/pam.d/common-password
+    else
+      sed -i '/pam_unix.so/i password    requisite    pam_pwquality.so retry=3' /etc/pam.d/common-password
+    fi
+    if [ ! -s /etc/pam.d/common-password ]; then
+      cp /etc/pam.d/common-password.bak.cis-pwq /etc/pam.d/common-password
+    fi
+  fi
+fi
+echo DONE""",
+        },
+        # MK Apr 2026 — Recovery control for PAM password stack. Detects the
+        # `pam_pwhistory.so use_authtok` without prior `pam_pwquality.so` situation
+        # (causes "Authentication token manipulation error" on every passwd call),
+        # repairs by either inserting pam_pwquality before pwhistory or stripping
+        # use_authtok if libpam-pwquality isn't installed. Idempotent — re-running
+        # on a healthy system is a no-op.
+        'pam_password_repair': {
+            # MK Apr 2026 — IMPORTANT: this check runs as part of a composite
+            # `{ check1; }; { check2; }; ...` chain. Brace groups share the parent
+            # shell's process, so a stray `exit 0` here would terminate ALL
+            # subsequent control checks. Use elif chain instead — no exits.
+            'check': """COMMON=/etc/pam.d/common-password
+if [ ! -f "$COMMON" ]; then
+  echo OK
+elif ! grep -q 'pam_pwhistory.so' "$COMMON" 2>/dev/null; then
+  echo OK
+elif ! grep 'pam_pwhistory.so' "$COMMON" | grep -q 'use_authtok'; then
+  echo OK
+elif awk '/pam_pwquality.so/{q=NR} /pam_pwhistory.so/{h=NR} END{exit !(q && q<h)}' "$COMMON"; then
+  echo OK
+else
+  echo FAIL
+fi""",
+            'verbose_check': """COMMON=/etc/pam.d/common-password
+echo '--- /etc/pam.d/common-password (password-stack lines) ---'
+grep -nE 'password\\s+(required|requisite|sufficient|optional)' "$COMMON" 2>/dev/null || echo '(no password lines found)'
+echo '--- libpam-pwquality status ---'
+dpkg -l libpam-pwquality 2>/dev/null | tail -1 || echo '(not installed)'""",
+            'apply': """COMMON=/etc/pam.d/common-password
+if [ ! -f "$COMMON" ]; then
+  echo "(no $COMMON — nothing to repair)"
+  echo DONE; exit 0
+fi
+if ! grep -q 'pam_pwhistory.so' "$COMMON" 2>/dev/null; then
+  echo "(pam_pwhistory not configured — nothing to repair)"
+  echo DONE; exit 0
+fi
+# already healthy?
+if awk '/pam_pwquality.so/{q=NR} /pam_pwhistory.so/{h=NR} END{exit !(q && q<h)}' "$COMMON"; then
+  if grep 'pam_pwhistory.so' "$COMMON" | grep -q 'use_authtok'; then
+    echo "(pam stack healthy: pwquality > pwhistory)"
+    echo DONE; exit 0
+  fi
+fi
+# also healthy if pwhistory has no use_authtok (it prompts itself, no chain needed)
+if ! grep 'pam_pwhistory.so' "$COMMON" | grep -q 'use_authtok'; then
+  echo "(pam stack healthy: pwhistory standalone, no use_authtok)"
+  echo DONE; exit 0
+fi
+TS=$(date +%s)
+cp "$COMMON" "$COMMON.bak.repair-$TS"
+# Prefer wiring in pwquality if the package is installed, else strip use_authtok.
+if dpkg -l libpam-pwquality 2>/dev/null | grep -q '^ii'; then
+  # remove any malformed pwquality line first
+  sed -i '/pam_pwquality.so/d' "$COMMON"
+  # insert pwquality requisite line right BEFORE the pwhistory line
+  sed -i '/pam_pwhistory.so/i password    requisite    pam_pwquality.so retry=3' "$COMMON"
+  echo "added pam_pwquality.so before pam_pwhistory.so (backup: $COMMON.bak.repair-$TS)"
+else
+  # no pwquality package — strip use_authtok so pwhistory prompts itself
+  sed -i 's| use_authtok||g' "$COMMON"
+  echo "removed use_authtok from pam_pwhistory.so (libpam-pwquality not installed) (backup: $COMMON.bak.repair-$TS)"
+fi
+# safety: empty file? roll back
+if [ ! -s "$COMMON" ]; then
+  cp "$COMMON.bak.repair-$TS" "$COMMON"
+  echo "ROLLED BACK — file was emptied by sed"
+  exit 1
+fi
 echo DONE""",
         },
         'pw_aging': {

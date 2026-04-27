@@ -728,7 +728,7 @@
         }
 
         // Cluster Sidebar Item Component - NS Jan 2026
-        function ClusterSidebarItem({ cluster, idx, selectedCluster, setSelectedCluster, nodeAlerts, clusterGroups, isAdmin, handleDeleteCluster, setShowAssignGroup, setRenamingCluster, setRenameValue, t, getAuthHeaders, fetchClusters, addToast, isCorporate, expandedSidebarClusters, toggleSidebarCluster, onContextMenu }) {
+        function ClusterSidebarItem({ cluster, idx, selectedCluster, setSelectedCluster, nodeAlerts, clusterGroups, isAdmin, handleDeleteCluster, setShowAssignGroup, setRenamingCluster, setRenameValue, setReconfigureCluster, t, getAuthHeaders, fetchClusters, addToast, isCorporate, expandedSidebarClusters, toggleSidebarCluster, onContextMenu }) {
             const offlineNodesCount = Object.values(nodeAlerts || {})
                 .filter(alert => alert.cluster_id === cluster.id && alert.status === 'offline')
                 .length;
@@ -2350,113 +2350,495 @@
                 return { total, passed, score: total ? Math.round(passed * 100 / total) : null };
             };
 
-            // NS Apr 2026 — per-framework PDF download. Pragmatic mapping (not a formal
-            // certification report — disclaimer always at the top of the PDF). User asked
-            // for "die wichtigsten US Defense Dinger" ready-to-download.
-            const downloadFrameworkReport = (fw) => {
+            // MK Apr 2026 — per-framework PDF download. Restructured to use real framework
+            // control IDs (e.g. AC.L2-3.1.8 instead of internal pam_faillock), grouped by
+            // control family with executive summary + remediation appendix for failed
+            // controls. Mapping fetched once from the backend (compliance_mapping.py) and
+            // cached in module scope. NS still wants the disclaimer up top so reviewers
+            // know this is a gap-analysis tool and not an audit deliverable.
+            const allTitles = {
+                fs_modules: t('cmFsModules') || 'Disable unused kernel modules',
+                core_dumps: t('cmCoreDumps') || 'Disable core dumps',
+                mount_options: t('cmMountOptions') || '/dev/shm noexec mount options',
+                journald: t('cmJournald') || 'journald persistent + compressed',
+                ssh_perms: t('cmSshPerms') || 'SSH file permissions + config',
+                ssh_crypto: t('cmSshCrypto') || 'SSH ciphers + MACs (BSI/CIS)',
+                pam_faillock: t('cmPamFaillock') || 'PAM faillock (lockout policy)',
+                pw_history: t('cmPwHistory') || 'Password reuse history',
+                pam_password_repair: t('cmPamPasswordRepair') || 'Repair PAM password stack (recovery)',
+                pw_quality: t('cmPwQuality') || 'Password complexity (pwquality)',
+                pw_aging: t('cmPwAging') || 'Password aging policy',
+                pw_hash_rounds: t('cmPwHashRounds') || 'Password hash rounds (yescrypt)',
+                file_perms: t('cmFilePerms') || 'Critical file permissions',
+                login_banners: t('cmLoginBanners') || 'Login banners (issue.net)',
+                file_integrity: t('cmFileIntegrity') || 'AIDE file integrity DB',
+                audit_boot: t('cmAuditBoot') || 'auditd boot enabled',
+                audit_rules: t('cmAuditRules') || 'auditd rules loaded',
+                aide_audit_protect: t('cmAideAuditProtect') || 'AIDE protects /var/log/audit',
+                audit_immutable: t('cmAuditImmutable') || 'auditd immutable mode',
+                mem_protection: t('cmMemProtection') || 'Memory protection (NX/ASLR)',
+                apparmor: t('cmApparmor') || 'AppArmor enabled + enforced',
+                sysctl_hardening: t('cmSysctl') || 'sysctl network hardening',
+                auditd_service: t('cmAuditdService') || 'auditd service enabled',
+                process_acct: t('cmProcessAcct') || 'Process accounting (psacct)',
+                debsums: t('cmDebsums') || 'debsums package integrity',
+                pkg_cleanup: t('cmPkgCleanup') || 'Unused packages removed',
+                session_limit: t('cmSessionLimit') || 'TMOUT session limits',
+                inactive_accounts: t('cmInactiveAccounts') || 'Inactive account expiry',
+                default_umask: t('cmDefaultUmask') || 'Default umask 027',
+                shell_timeout: t('cmShellTimeout') || 'Shell timeout',
+                cron_hardening: t('cmCronHardening') || 'cron/at restricted',
+                pam_tmpdir: t('cmPamTmpdir') || 'Per-user private /tmp (pam_tmpdir)',
+                pve_fail2ban: t('cmPveFail2ban') || 'fail2ban (PVE jail)',
+                apt_show_versions: t('cmAptShowVersions') || 'apt-show-versions installed',
+                backup_dns: t('cmBackupDns') || 'Backup DNS resolver configured',
+                postfix_banner: t('cmPostfixBanner') || 'Postfix banner does not leak version',
+                disable_services: t('cmDisableServices') || 'Unused services disabled',
+                remove_legacy_svcs: t('cmRemoveLegacy') || 'Legacy services removed',
+                net_protocols: t('cmNetProtocols') || 'Rare network protocols disabled',
+                restrict_compilers: t('cmRestrictCompilers') || 'Compilers root-only',
+                usb_storage: t('cmUsbStorage') || 'USB mass storage disabled',
+                sysstat: t('cmSysstat') || 'sysstat (sar) collecting',
+                vsnfd_disk_encryption: t('cmVsnfdDiskEnc') || 'Disk encryption (LUKS / ZFS native)',
+                vsnfd_audit_retention: t('cmVsnfdAuditRet') || 'journald MaxRetentionSec ≥ 6 months',
+                vsnfd_journald_size: t('cmVsnfdJournaldSize') || 'journald SystemMaxUse ≥ 1G',
+                vsnfd_secure_boot: t('cmVsnfdSecureBoot') || 'Secure Boot status',
+                vsnfd_kernel_lockdown: t('cmVsnfdKernelLockdown') || 'Kernel lockdown (integrity/confidentiality)',
+                vsnfd_password_min_12: t('cmVsnfdPwMin12') || 'Password minlen ≥ 12 (BSI)',
+            };
+
+            const fetchComplianceMapping = async () => {
+                if (window._PEGAPROX_COMPLIANCE_MAPPING_CACHE) return window._PEGAPROX_COMPLIANCE_MAPPING_CACHE;
+                try {
+                    const r = await authFetch(`${API_URL}/compliance/mapping`);
+                    if (!r?.ok) return null;
+                    const d = await r.json();
+                    window._PEGAPROX_COMPLIANCE_MAPPING_CACHE = d;
+                    return d;
+                } catch(e) { return null; }
+            };
+
+            const downloadFrameworkReport = async (fw) => {
                 if (typeof window.jspdf === 'undefined' || typeof generatePegaProxPDF !== 'function') {
                     addToast('PDF library not loaded', 'error');
                     return;
                 }
                 const c = selectedCluster;
-                const score = frameworkScore(fw);
-                const blocks = [];
-                blocks.push({
-                    type: 'table', title: `${fw.name} — Compliance Coverage`,
-                    columns: ['Property', 'Value'],
-                    rows: [
-                        ['Framework', fw.name],
-                        ['Region', fw.region],
-                        ['Cluster', c?.name || c?.id || '—'],
-                        ['Profile', profile === 'vs-nfd' ? 'VS-NfD' : profile.toUpperCase()],
-                        ['Coverage score', score.score == null ? 'no data' : `${score.score}%`],
-                        ['Controls evaluated', `${score.passed}/${score.total}`],
-                        ['Generated at', new Date().toISOString()],
-                        ['Tool', 'PegaProx ' + (window.PEGAPROX_VERSION || '0.9.x')],
-                    ]
-                });
-                blocks.push({ type: 'spacer', height: 4 });
-                blocks.push({
-                    type: 'table', title: 'Disclaimer',
-                    columns: ['Note'],
-                    rows: [
-                        ['This report is a best-effort coverage analysis from automated CIS-style audit checks.'],
-                        ['It is NOT a formal certification, accreditation, or attestation against ' + fw.name + '.'],
-                        ['Formal compliance requires documented evidence per control, third-party audit, and (where applicable) certified cryptographic modules / Common Criteria evaluation.'],
-                        ['Use as gap-analysis input — not as an audit deliverable on its own.'],
-                    ]
-                });
-                blocks.push({ type: 'spacer', height: 4 });
-                // per-node + per-control matrix
-                const perNode = (results[c?.id] || {});
-                const allTitles = {
-                    fs_modules: 'Disable unused kernel modules',
-                    core_dumps: 'Disable core dumps',
-                    mount_options: '/dev/shm noexec mount options',
-                    journald: 'journald persistent + compressed',
-                    ssh_perms: 'SSH file permissions + config',
-                    ssh_crypto: 'SSH ciphers + MACs (BSI/CIS)',
-                    pam_faillock: 'PAM faillock (lockout policy)',
-                    pw_history: 'Password reuse history',
-                    pw_quality: 'Password complexity (pwquality)',
-                    pw_aging: 'Password aging policy',
-                    pw_hash_rounds: 'Password hash rounds (yescrypt)',
-                    file_perms: 'Critical file permissions',
-                    login_banners: 'Login banners (issue.net)',
-                    file_integrity: 'AIDE file integrity DB',
-                    audit_boot: 'auditd boot enabled',
-                    audit_rules: 'auditd rules loaded',
-                    aide_audit_protect: 'AIDE protects /var/log/audit',
-                    audit_immutable: 'auditd immutable mode',
-                    mem_protection: 'Memory protection (NX/ASLR)',
-                    apparmor: 'AppArmor enabled + enforced',
-                    sysctl_hardening: 'sysctl network hardening',
-                    auditd_service: 'auditd service enabled',
-                    process_acct: 'Process accounting (psacct)',
-                    debsums: 'debsums package integrity',
-                    pkg_cleanup: 'Unused packages removed',
-                    session_limit: 'TMOUT session limits',
-                    inactive_accounts: 'Inactive account expiry',
-                    default_umask: 'Default umask 027',
-                    shell_timeout: 'Shell timeout',
-                    vsnfd_disk_encryption: 'Disk encryption (LUKS / ZFS native)',
-                    vsnfd_audit_retention: 'journald MaxRetentionSec ≥ 6 months',
-                    vsnfd_journald_size: 'journald SystemMaxUse ≥ 1G',
-                    vsnfd_secure_boot: 'Secure Boot status',
-                    vsnfd_kernel_lockdown: 'Kernel lockdown (integrity/confidentiality)',
-                    vsnfd_password_min_12: 'Password minlen ≥ 12 (BSI)',
-                };
-                const matrixRows = [];
-                fw.controls.forEach(cid => {
-                    Object.entries(perNode).forEach(([nodeName, info]) => {
-                        if (!info.controls) return;
+                if (!c) {
+                    addToast(t('selectClusterFirst') || 'Please select a cluster first', 'error');
+                    return;
+                }
+                const mappingData = await fetchComplianceMapping();
+                if (!mappingData) {
+                    addToast(t('complianceMappingLoadFail') || 'Could not load compliance mapping', 'error');
+                    return;
+                }
+                addToast(t('generatingReport') || 'Generating audit report — fetching evidence...', 'info');
+
+                // Frontend uses 'vsnfd', backend uses 'vs-nfd'. FIPS has no real mapping (informational).
+                const fwMapKey = fw.id === 'vsnfd' ? 'vs-nfd' : fw.id;
+                const mapping        = (mappingData.mappings || {})[fwMapKey] || {};
+                const familyLabels   = mappingData.family_labels || {};
+                const remediation    = mappingData.remediation || {};
+                const severityMap    = mappingData.severity || {};
+                const timelineMap    = mappingData.recommended_timeline || {};
+                const priorityMap    = mappingData.priority_level || {};
+                const fwMeta         = (mappingData.framework_meta || {})[fwMapKey]
+                                     || (mappingData.framework_meta || {})[fw.id]
+                                     || {};
+                const postureLevels  = mappingData.posture_levels || [];
+                const glossary       = mappingData.glossary || {};
+                const methodology    = mappingData.methodology || {};
+
+                const perNode = (results[c.id] || {});
+                const nodes   = Object.keys(perNode);
+
+                // Re-fetch hardening with verbose=1 so Appendix C (Evidence) has the
+                // actual command output. Sequential is fine — 5-15s for typical clusters,
+                // and the user clicked into a long-form audit report so they expect a wait.
+                const verbose = {};
+                for (const node of nodes) {
+                    try {
+                        const url = `${API_URL}/clusters/${c.id}/nodes/${encodeURIComponent(node)}/hardening?profile=${encodeURIComponent(profile)}&verbose=1`;
+                        const r = await authFetch(url);
+                        if (r?.ok) {
+                            const d = await r.json();
+                            verbose[node] = d.controls || {};
+                        }
+                    } catch (e) { /* keep going */ }
+                }
+
+                // ── Per-node coverage stats ──
+                const nodeStats = nodes.map(node => {
+                    const info = perNode[node] || {};
+                    const checked = fw.controls.filter(cid => info?.controls?.[cid] !== undefined);
+                    const passed = checked.filter(cid => {
                         const v = info.controls[cid];
+                        return v === true || v?.status === true;
+                    });
+                    return {
+                        node,
+                        checked: checked.length,
+                        passed:  passed.length,
+                        failed:  checked.length - passed.length,
+                        coverage: checked.length ? Math.round(passed.length * 100 / checked.length) : null,
+                    };
+                });
+                const overallChecked = nodeStats.reduce((s, n) => s + n.checked, 0);
+                const overallPassed  = nodeStats.reduce((s, n) => s + n.passed, 0);
+                const overallFailed  = overallChecked - overallPassed;
+                const overallCoverage = overallChecked ? Math.round(overallPassed * 100 / overallChecked) : 0;
+
+                // ── Severity-rated stats ──
+                // For each (node × control) data point, group by severity to produce
+                // a Severity Breakdown table. High-severity coverage is also used for
+                // the posture rating.
+                const sevBuckets = { high: {checked:0, passed:0}, medium: {checked:0, passed:0},
+                                     low: {checked:0, passed:0}, informational: {checked:0, passed:0} };
+                fw.controls.forEach(cid => {
+                    const sev = severityMap[cid] || 'medium';
+                    nodes.forEach(node => {
+                        const v = perNode[node]?.controls?.[cid];
                         if (v === undefined) return;
-                        const status = (v === true || v?.status === true) ? 'PASS' : 'FAIL';
-                        matrixRows.push([nodeName, cid, allTitles[cid] || cid, status]);
+                        sevBuckets[sev].checked += 1;
+                        if (v === true || v?.status === true) sevBuckets[sev].passed += 1;
                     });
                 });
-                if (matrixRows.length) {
-                    blocks.push({
-                        type: 'table', title: 'Per-control results',
-                        columns: ['Node', 'Control ID', 'Title', 'Status'],
-                        rows: matrixRows,
+                const highPct = sevBuckets.high.checked
+                    ? Math.round(sevBuckets.high.passed * 100 / sevBuckets.high.checked)
+                    : 100;  // no high-severity items in scope ⇒ vacuously OK
+
+                // Posture rating (mirrors backend evaluate_posture)
+                let posture = postureLevels[postureLevels.length - 1] || { id:'noncompliant', label:'Non-Compliant', description:'' };
+                for (const lvl of postureLevels) {
+                    if (overallCoverage >= (lvl.min_overall_pct || 0)
+                        && highPct >= (lvl.min_high_pct || 0)) {
+                        posture = lvl; break;
+                    }
+                }
+
+                // ── Group controls by framework family ──
+                const byFamily = {};
+                fw.controls.forEach(cid => {
+                    const refs = mapping[cid] || [];
+                    const familyKey = refs.length > 0 ? refs[0].family : 'OTHER';
+                    if (!byFamily[familyKey]) byFamily[familyKey] = [];
+                    const ctrlResults = {};
+                    nodes.forEach(node => {
+                        const v = perNode[node]?.controls?.[cid];
+                        if (v === undefined) {
+                            ctrlResults[node] = '—';
+                        } else {
+                            ctrlResults[node] = (v === true || v?.status === true) ? 'PASS' : 'FAIL';
+                        }
                     });
-                } else {
+                    const evaluated = Object.values(ctrlResults).filter(s => s !== '—');
+                    const anyFail   = evaluated.some(s => s === 'FAIL');
+                    const allPass   = evaluated.length > 0 && evaluated.every(s => s === 'PASS');
+                    byFamily[familyKey].push({
+                        cid, refs,
+                        severity: severityMap[cid] || 'medium',
+                        title: allTitles[cid] || cid,
+                        results: ctrlResults,
+                        anyFail, allPass,
+                    });
+                });
+
+                // ── Failed controls (sorted high → low priority for Appendix B) ──
+                const failedControls = [];
+                Object.keys(byFamily).forEach(family => {
+                    byFamily[family].forEach(ctrl => { if (ctrl.anyFail) failedControls.push(ctrl); });
+                });
+                failedControls.sort((a, b) => {
+                    const pa = priorityMap[a.severity] || 99;
+                    const pb = priorityMap[b.severity] || 99;
+                    if (pa !== pb) return pa - pb;
+                    return a.cid.localeCompare(b.cid);
+                });
+
+                // ── Top-5 highest-risk findings (for executive summary) ──
+                const topFindings = failedControls.slice(0, 5);
+
+                // Helper — uppercase severity badge text
+                const sevBadge = (s) => (s || 'medium').toUpperCase();
+
+                // ── Build PDF blocks ──
+                const blocks = [];
+                const now = new Date();
+                const isoTime = now.toISOString();
+                const reportingPeriod = `Snapshot at ${isoTime}`;
+                const profileLabel = profile === 'vs-nfd' ? 'VS-NfD' : profile.toUpperCase();
+
+                // ──────────────────────────────────────────────────────────
+                // 1. Cover page metadata
+                // ──────────────────────────────────────────────────────────
+                blocks.push({
+                    type: 'table',
+                    title: `${fw.name} — ${t('complianceAssessmentReport') || 'Compliance Assessment Report'}`,
+                    columns: [t('property') || 'Property', t('value') || 'Value'],
+                    rows: [
+                        [t('subjectOrg') || 'Subject',                c.name || c.id],
+                        [t('framework') || 'Framework',               fwMeta.full_name || fw.name],
+                        [t('frameworkRevision') || 'Framework revision', fwMeta.revision || '—'],
+                        [t('hardeningProfile') || 'Hardening profile', profileLabel],
+                        [t('reportingPeriod') || 'Reporting period',   reportingPeriod],
+                        [t('classification') || 'Classification',      t('classificationInternal') || 'Internal Use — Audit Working Paper'],
+                        [t('generatedBy') || 'Generated by',           (user?.username || user?.email || 'PegaProx')],
+                        [t('reportTool') || 'Report tool',             'PegaProx ' + (window.PEGAPROX_VERSION || '0.9.x')],
+                        [t('generatedAt') || 'Generated at',           isoTime],
+                    ],
+                });
+                blocks.push({ type: 'spacer', height: 4 });
+
+                // ──────────────────────────────────────────────────────────
+                // 1b. Disclaimer — surfaced up front so the reader sees the
+                // scope/limitation language BEFORE the findings, not buried
+                // at the back of the report.
+                // ──────────────────────────────────────────────────────────
+                blocks.push({
+                    type: 'table', title: t('disclaimer') || 'Disclaimer',
+                    columns: [t('note') || 'Note'],
+                    rows: [
+                        [t('disclaimerLine1') || 'This report is a best-effort technical coverage analysis from automated audit checks.'],
+                        [(t('disclaimerLine2') || 'It is NOT a formal certification, accreditation, or attestation against {fw}.').replace('{fw}', fw.name)],
+                        [t('disclaimerLine3') || 'Formal compliance requires documented evidence per control, third-party audit, and (where applicable) certified cryptographic modules.'],
+                        [t('disclaimerLine4') || 'Use as gap-analysis input. Re-verify mappings against the current framework revision before submitting any audit deliverable.'],
+                    ],
+                });
+                blocks.push({ type: 'spacer', height: 6 });
+
+                // ──────────────────────────────────────────────────────────
+                // 2. Executive Summary — posture + counts + top findings
+                // ──────────────────────────────────────────────────────────
+                blocks.push({
+                    type: 'table',
+                    title: t('executiveSummary') || 'Executive Summary',
+                    columns: [t('property') || 'Property', t('value') || 'Value'],
+                    rows: [
+                        [t('compliancePosture') || 'Compliance posture', `${posture.label} (${overallCoverage}%)`],
+                        [t('postureNarrative') || 'Posture narrative',   posture.description || ''],
+                        [t('totalControlsEvaluated') || 'Total controls evaluated', String(overallChecked)],
+                        [t('passed') || 'Passed', `${overallPassed} (${overallChecked ? Math.round(overallPassed*100/overallChecked) : 0}%)`],
+                        [t('failed') || 'Failed', `${overallFailed} (${overallChecked ? Math.round(overallFailed*100/overallChecked) : 0}%)`],
+                        [t('highSeverityCoverage') || 'High-severity coverage', `${sevBuckets.high.passed}/${sevBuckets.high.checked} (${highPct}%)`],
+                        [t('mediumSeverityCoverage') || 'Medium-severity coverage', `${sevBuckets.medium.passed}/${sevBuckets.medium.checked}`],
+                        [t('lowSeverityCoverage') || 'Low-severity coverage',    `${sevBuckets.low.passed}/${sevBuckets.low.checked}`],
+                        [t('informationalCoverage') || 'Informational items',     `${sevBuckets.informational.passed}/${sevBuckets.informational.checked}`],
+                    ],
+                });
+                blocks.push({ type: 'spacer', height: 4 });
+
+                if (topFindings.length) {
                     blocks.push({
-                        type: 'table', title: 'Per-control results',
-                        columns: ['Note'],
-                        rows: [['No hardening data available — make sure SSH to nodes works and the selected profile covers this framework.']],
+                        type: 'table',
+                        title: t('topFindings') || `Top Findings — Highest Priority (showing ${topFindings.length})`,
+                        columns: [t('priority') || '#', t('severity') || 'Severity', t('ref') || 'Ref', t('controlTitle') || 'Title', t('affectedNodes') || 'Affected Nodes'],
+                        rows: topFindings.map((ctrl, i) => {
+                            const refStr = ctrl.refs.length ? ctrl.refs.map(r => r.ref).join(', ') : ctrl.cid;
+                            const titleStr = ctrl.refs.length ? ctrl.refs[0].title : ctrl.title;
+                            const failNodes = Object.entries(ctrl.results).filter(([_, s]) => s === 'FAIL').map(([n]) => n).join(', ') || '—';
+                            return [String(i + 1), sevBadge(ctrl.severity), refStr, titleStr, failNodes];
+                        }),
+                    });
+                    blocks.push({ type: 'spacer', height: 4 });
+                }
+
+                // ──────────────────────────────────────────────────────────
+                // 3. Scope of Assessment
+                // ──────────────────────────────────────────────────────────
+                blocks.push({
+                    type: 'table',
+                    title: t('scopeOfAssessment') || 'Scope of Assessment',
+                    columns: [t('property') || 'Property', t('value') || 'Value'],
+                    rows: [
+                        [t('inScopeCluster') || 'In-scope cluster', c.name || c.id],
+                        [t('inScopeNodes') || 'In-scope nodes',     nodes.length ? nodes.join(', ') : '(none reachable)'],
+                        [t('frameworkSource') || 'Framework source', fwMeta.source_url || '—'],
+                        [t('frameworkNote') || 'Framework note',     fwMeta.note || '—'],
+                        [t('hardeningProfile') || 'Hardening profile', profileLabel],
+                        [t('controlSetSize') || 'Control set size',  `${fw.controls.length} controls in profile, ${overallChecked} evaluated`],
+                        [t('sampling') || 'Sampling',                methodology.sampling || '100% of in-scope nodes evaluated.'],
+                        [t('outOfScope') || 'Out of scope',          t('outOfScopeText') || 'Administrative policies, personnel security, physical security, incident response, supply chain risk, and cryptographic module validation (FIPS 140-3) are NOT assessed by this report.'],
+                    ],
+                });
+                blocks.push({ type: 'spacer', height: 4 });
+
+                // ──────────────────────────────────────────────────────────
+                // 4. Methodology
+                // ──────────────────────────────────────────────────────────
+                blocks.push({
+                    type: 'table', title: t('methodology') || 'Methodology',
+                    columns: [t('topic') || 'Topic', t('description') || 'Description'],
+                    rows: [
+                        [t('overview') || 'Overview', methodology.overview || ''],
+                        ...((methodology.procedures || []).map(p => [p[0], p[1]])),
+                        [t('sampling') || 'Sampling', methodology.sampling || ''],
+                        [t('criteria') || 'Criteria', methodology.criteria || ''],
+                        [t('limitations') || 'Limitations', methodology.limitations || ''],
+                    ],
+                });
+                blocks.push({ type: 'spacer', height: 4 });
+
+                // ──────────────────────────────────────────────────────────
+                // 5. Findings Summary by Severity
+                // ──────────────────────────────────────────────────────────
+                blocks.push({
+                    type: 'table',
+                    title: t('findingsBySeverity') || 'Findings Summary — by Severity',
+                    columns: [t('severity') || 'Severity', t('checked') || 'Checked', t('passed') || 'Passed', t('failed') || 'Failed', t('coverage') || 'Coverage'],
+                    rows: [
+                        ['HIGH',          String(sevBuckets.high.checked),          String(sevBuckets.high.passed),          String(sevBuckets.high.checked - sevBuckets.high.passed),          sevBuckets.high.checked          ? `${Math.round(sevBuckets.high.passed*100/sevBuckets.high.checked)}%`                   : '—'],
+                        ['MEDIUM',        String(sevBuckets.medium.checked),        String(sevBuckets.medium.passed),        String(sevBuckets.medium.checked - sevBuckets.medium.passed),        sevBuckets.medium.checked        ? `${Math.round(sevBuckets.medium.passed*100/sevBuckets.medium.checked)}%`               : '—'],
+                        ['LOW',           String(sevBuckets.low.checked),           String(sevBuckets.low.passed),           String(sevBuckets.low.checked - sevBuckets.low.passed),           sevBuckets.low.checked           ? `${Math.round(sevBuckets.low.passed*100/sevBuckets.low.checked)}%`                     : '—'],
+                        ['INFORMATIONAL', String(sevBuckets.informational.checked), String(sevBuckets.informational.passed), String(sevBuckets.informational.checked - sevBuckets.informational.passed), sevBuckets.informational.checked ? `${Math.round(sevBuckets.informational.passed*100/sevBuckets.informational.checked)}%` : '—'],
+                    ],
+                });
+                blocks.push({ type: 'spacer', height: 4 });
+
+                // ──────────────────────────────────────────────────────────
+                // 6. Findings — Per-Node Coverage
+                // ──────────────────────────────────────────────────────────
+                blocks.push({
+                    type: 'table', title: t('findingsPerNode') || 'Findings — Per-Node Coverage',
+                    columns: [t('node') || 'Node', t('passed') || 'Passed', t('failed') || 'Failed', t('total') || 'Total', t('coverage') || 'Coverage'],
+                    rows: nodeStats.length ? nodeStats.map(s => [
+                        s.node, String(s.passed), String(s.failed), String(s.checked),
+                        s.coverage == null ? '—' : `${s.coverage}%`
+                    ]) : [['(no data)', '—', '—', '—', '—']],
+                });
+                blocks.push({ type: 'spacer', height: 4 });
+
+                // ──────────────────────────────────────────────────────────
+                // 7. Findings — Per-Family Detail (with Severity column)
+                // ──────────────────────────────────────────────────────────
+                Object.keys(byFamily).sort().forEach(familyCode => {
+                    const ctrls = byFamily[familyCode];
+                    const label = familyLabels[familyCode] || familyCode;
+                    const passedCount = ctrls.filter(x => x.allPass).length;
+                    const totalCtrls = ctrls.length;
+                    const titleStr = familyCode === 'OTHER'
+                        ? `${t('otherCrossCutting') || 'Other / Cross-cutting'} (${passedCount}/${totalCtrls} ${t('fullySatisfied') || 'fully satisfied'})`
+                        : `${familyCode} — ${label} (${passedCount}/${totalCtrls} ${t('fullySatisfied') || 'fully satisfied'})`;
+                    blocks.push({
+                        type: 'table', title: titleStr,
+                        columns: [t('ref') || 'Ref', t('controlTitle') || 'Control Title', t('severity') || 'Severity', t('pegaproxControl') || 'PegaProx control', ...nodes],
+                        rows: ctrls.map(ctrl => {
+                            const refsStr = ctrl.refs.length ? ctrl.refs.map(r => r.ref).join('\n') : (t('noDirectMapping') || 'no direct mapping');
+                            const titleStr2 = ctrl.refs.length ? ctrl.refs[0].title : ctrl.title;
+                            return [refsStr, titleStr2, sevBadge(ctrl.severity), ctrl.cid, ...nodes.map(n => ctrl.results[n] || '—')];
+                        }),
+                    });
+                });
+
+                // ──────────────────────────────────────────────────────────
+                // 8. Appendix B — Remediation Plan (priority + timeline)
+                // ──────────────────────────────────────────────────────────
+                if (failedControls.length) {
+                    blocks.push({ type: 'spacer', height: 6 });
+                    blocks.push({
+                        type: 'table',
+                        title: `${t('appendixBRemediation') || 'Appendix B — Remediation Plan'} (${failedControls.length} ${failedControls.length === 1 ? (t('failedControl') || 'failed control') : (t('failedControls') || 'failed controls')})`,
+                        columns: [t('priority') || '#', t('severity') || 'Severity', t('timeline') || 'Timeline', t('ref') || 'Ref', t('controlTitle') || 'Title', t('pegaproxControl') || 'PegaProx control', t('affectedNodes') || 'Affected Nodes', t('recommendedAction') || 'Recommended Action'],
+                        rows: failedControls.map((ctrl, i) => {
+                            const refsStr = ctrl.refs.length ? ctrl.refs.map(r => r.ref).join(', ') : ctrl.cid;
+                            const titleStr2 = ctrl.refs.length ? ctrl.refs[0].title : ctrl.title;
+                            const failNodes = Object.entries(ctrl.results).filter(([_, s]) => s === 'FAIL').map(([n]) => n).join(', ') || '—';
+                            const tl = (timelineMap[ctrl.severity] || {}).label || '—';
+                            const rem = remediation[ctrl.cid];
+                            const remStr = rem
+                                ? `${rem.summary}\n\n${t('howToFix') || 'How to fix'}: ${rem.how_to_fix}`
+                                : (t('useHardeningTool') || 'Use PegaProx Hardening tool to apply') + ` "${ctrl.cid}".`;
+                            return [String(i + 1), sevBadge(ctrl.severity), tl, refsStr, titleStr2, ctrl.cid, failNodes, remStr];
+                        }),
+                    });
+                    // Operator-handoff hint — explicitly link the report back to the Hardening UI.
+                    blocks.push({
+                        type: 'text',
+                        value: t('hardeningUiHint') || 'Operator note: the values in the "PegaProx control" column match the checkbox names in Settings → Compliance → Harden PVE Node. To remediate, select the failed control by that name and click "Apply Selected".',
                     });
                 }
-                const dt = new Date().toISOString().slice(0, 10);
-                generatePegaProxPDF({
-                    title: `${fw.name} Compliance Report`,
-                    subtitle: c?.name || 'PegaProx',
-                    clusterName: c?.name,
-                    filename: `pegaprox-compliance-${fw.id}-${(c?.id || 'cluster')}-${dt}.pdf`,
-                    content: blocks,
+
+                // ──────────────────────────────────────────────────────────
+                // 9. Appendix C — Evidence (verbose mode output)
+                // ──────────────────────────────────────────────────────────
+                const evidenceRows = [];
+                if (failedControls.length && Object.keys(verbose).length) {
+                    failedControls.forEach(ctrl => {
+                        Object.entries(ctrl.results).forEach(([node, status]) => {
+                            if (status !== 'FAIL') return;
+                            const v = verbose[node]?.[ctrl.cid];
+                            if (!v || typeof v !== 'object') return;
+                            const checkCmd = v.check_command || v.command || '';
+                            const observed = v.actual || v.output || v.evidence || '';
+                            const expected = v.expected || 'OK';
+                            evidenceRows.push([
+                                ctrl.refs.length ? ctrl.refs[0].ref : ctrl.cid,
+                                ctrl.cid,
+                                node,
+                                String(checkCmd).slice(0, 240),
+                                String(expected).slice(0, 80),
+                                String(observed).slice(0, 240) || '(no output)',
+                            ]);
+                        });
+                    });
+                }
+                if (evidenceRows.length) {
+                    blocks.push({ type: 'spacer', height: 6 });
+                    blocks.push({
+                        type: 'table',
+                        title: `${t('appendixCEvidence') || 'Appendix C — Evidence'} (${evidenceRows.length} ${t('observations') || 'observations'})`,
+                        columns: [t('ref') || 'Ref', t('pegaproxControl') || 'PegaProx control', t('node') || 'Node', t('checkCommand') || 'Check command', t('expected') || 'Expected', t('observed') || 'Observed'],
+                        rows: evidenceRows,
+                    });
+                }
+
+                // ──────────────────────────────────────────────────────────
+                // 10. Appendix D — Glossary (only terms relevant to this report)
+                // ──────────────────────────────────────────────────────────
+                const glossaryRows = [];
+                const baseTerms = ['PegaProx', 'PVE', 'CIS', 'BSI', fw.region === 'EU' ? 'IT-Grundschutz' : 'STIG'];
+                const usedSlugs = new Set(baseTerms);
+                fw.controls.forEach(cid => {
+                    const titleLow = (allTitles[cid] || cid).toLowerCase();
+                    Object.keys(glossary).forEach(term => {
+                        if (titleLow.includes(term.toLowerCase())) usedSlugs.add(term);
+                    });
                 });
+                // also add framework-specific term
+                const fwTerm = ({cmmc1: 'CMMC', cmmc2: 'NIST 800-171', nist53: 'NIST 800-53', stig: 'STIG', iso: 'ISO 27001', bsi: 'BSI', vsnfd: 'VS-NfD', 'vs-nfd': 'VS-NfD'})[fw.id];
+                if (fwTerm && glossary[fwTerm]) usedSlugs.add(fwTerm);
+                Array.from(usedSlugs).sort().forEach(term => {
+                    if (glossary[term]) glossaryRows.push([term, glossary[term]]);
+                });
+                if (glossaryRows.length) {
+                    blocks.push({ type: 'spacer', height: 6 });
+                    blocks.push({
+                        type: 'table',
+                        title: t('appendixDGlossary') || 'Appendix D — Glossary',
+                        columns: [t('term') || 'Term', t('definition') || 'Definition'],
+                        rows: glossaryRows,
+                    });
+                }
+
+                // ──────────────────────────────────────────────────────────
+                // 11. End-of-report sign-off — short reminder that points
+                // back to the Disclaimer block at the top of the report.
+                // ──────────────────────────────────────────────────────────
+                blocks.push({ type: 'spacer', height: 6 });
+                blocks.push({
+                    type: 'text',
+                    value: t('endOfReportNote') || 'End of report. Refer to the Disclaimer at the top of this document for limitations on the use of these findings.',
+                });
+
+                const dt = isoTime.slice(0, 10);
+                generatePegaProxPDF({
+                    title:     `${fw.name} ${t('complianceReport') || 'Compliance Report'}`,
+                    subtitle:  c.name || 'PegaProx',
+                    clusterName: c.name,
+                    filename:  `pegaprox-compliance-${fw.id}-${(c.id || 'cluster')}-${dt}.pdf`,
+                    content:   blocks,
+                });
+                addToast(t('reportReady') || 'Report ready', 'success');
             };
 
             return (
@@ -8895,6 +9277,7 @@
                                                                             setShowAssignGroup={setShowAssignGroup}
                                                                             setRenamingCluster={setRenamingCluster}
                                                                             setRenameValue={setRenameValue}
+                                                                            setReconfigureCluster={setReconfigureCluster}
                                                                             t={t}
                                                                             getAuthHeaders={getAuthHeaders}
                                                                             fetchClusters={fetchClusters}
@@ -8941,6 +9324,7 @@
                                                                     setShowAssignGroup={setShowAssignGroup}
                                                                     setRenamingCluster={setRenamingCluster}
                                                                     setRenameValue={setRenameValue}
+                                                                    setReconfigureCluster={setReconfigureCluster}
                                                                     t={t}
                                                                     getAuthHeaders={getAuthHeaders}
                                                                     fetchClusters={fetchClusters}
@@ -10819,6 +11203,10 @@
                                                                 auditd_service: { ref: 'Audit', title: t('pegaAuditd') || 'Enable Audit Daemon (auditd)', desc: t('pegaAuditdDesc') || 'Installs and enables auditd for system event logging. Pair with STIG "Privileged Command Logging" for comprehensive audit rules.', impact: t('pegaAuditdImpact') || 'Minimal overhead — prerequisite for audit rules' },
                                                                 // MK Apr 2026 — brute-force protection for SSH + PVE Web-UI
                                                                 pve_fail2ban: { ref: 'Brute-Force', title: t('pegaFail2ban') || 'fail2ban — SSH + PVE Web-UI', desc: t('pegaFail2banDesc') || 'Installs fail2ban with jails for sshd and Proxmox Web-UI/API authentication. Policy: 5 failed logins in 10 minutes trigger a 24h IP ban. File-marker /etc/fail2ban/jail.d/pegaprox-pve.conf makes re-apply safe.', impact: t('pegaFail2banImpact') || 'Negligible — reads /var/log/daemon.log + /var/log/auth.log. Review banned IPs with `fail2ban-client status proxmox`.' },
+                                                                // MK Apr 2026 — Recovery control. Detects + repairs the broken PAM stack
+                                                                // (pam_pwhistory.so use_authtok without preceding pam_pwquality.so) that
+                                                                // triggers "Authentication token manipulation error" on every passwd.
+                                                                pam_password_repair: { ref: 'Recovery', title: t('cmPamPasswordRepair') || 'Repair PAM password stack (recovery)', desc: t('pegaPamRepairDesc') || 'Detects a broken /etc/pam.d/common-password where pam_pwhistory.so was inserted with use_authtok but no pam_pwquality.so is in front of it. Fix: inserts pam_pwquality.so BEFORE pwhistory if libpam-pwquality is installed, otherwise strips use_authtok so pwhistory prompts itself. A timestamped backup is saved as common-password.bak.repair-<ts>. Idempotent — re-running on a healthy system is a no-op.', impact: t('pegaPamRepairImpact') || 'No impact on healthy systems. Restores ability to change passwords on systems where it was broken.' },
                                                             };
                                                             // NS Apr 2026 — VS-NfD informational checks (audit-only, apply is no-op).
                                                             // BSI Grundschutz expects documented operator decision per environment.

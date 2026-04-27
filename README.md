@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.9.8--beta-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-0.9.8.1--beta-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.8+-green" alt="Python"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0--License-orange" alt="License"/>
 </p>
@@ -51,7 +51,9 @@ PegaProx is a powerful web-based management interface for Proxmox VE and XCP-ng 
 ### 🥈 Silver
 
 <p align="center">
-  <em>Your logo here</em> — <a href="mailto:sponsor@pegaprox.com">Become a Silver Sponsor</a>
+  <a href="https://uvensys.de/">
+    <img src="images/sponsors/uvensys.png" alt="uvensys GmbH" width="160"/>
+  </a>
 </p>
 
 ### 🥉 Bronze
