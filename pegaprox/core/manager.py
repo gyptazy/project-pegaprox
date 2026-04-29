@@ -9038,21 +9038,64 @@ echo "AGENT_INSTALLED_OK"
     # ==================== REPLICATION METHODS ====================
     
     def get_replication_jobs(self, vmid: int = None) -> List[Dict]:
-        
+
         if not self.is_connected:
             if not self.connect_to_proxmox():
                 return []
-        
+
         try:
             url = f"https://{self.host}:8006/api2/json/cluster/replication"
             response = self._api_get(url)
-            
-            if response.status_code == 200:
-                jobs = response.json()['data']
-                if vmid:
-                    jobs = [j for j in jobs if j.get('guest') == vmid]
-                return jobs
-            return []
+
+            if response.status_code != 200:
+                return []
+            jobs = response.json()['data']
+            if vmid:
+                jobs = [j for j in jobs if j.get('guest') == vmid]
+
+            # MK Apr 2026 (#333) — /cluster/replication only carries the job
+            # DEFINITION (id, target, schedule, …); runtime fields like
+            # last_sync / last_try / duration / state / error / fail_count
+            # only come back from the per-node /nodes/{node}/replication
+            # endpoint. Fetch that for the source node(s) and merge in by
+            # job id so the UI's "Last sync" stops showing "Never" for jobs
+            # that have actually been running.
+            try:
+                source_nodes = {j.get('source') for j in jobs if j.get('source')}
+                # PVE typically only fills `source` after first run; fall back to
+                # iterating all online nodes if the field is missing.
+                if not source_nodes:
+                    nodes_url = f"https://{self.host}:8006/api2/json/nodes"
+                    nr = self._api_get(nodes_url)
+                    if nr.status_code == 200:
+                        source_nodes = {n['node'] for n in nr.json().get('data', [])
+                                        if n.get('status') == 'online'}
+                runtime_by_id = {}
+                for nname in source_nodes:
+                    try:
+                        nu = f"https://{self.host}:8006/api2/json/nodes/{nname}/replication"
+                        rr = self._api_get(nu)
+                        if rr.status_code == 200:
+                            for entry in rr.json().get('data', []) or []:
+                                jid = entry.get('id')
+                                if not jid:
+                                    continue
+                                # Take the freshest record across nodes (last_sync wins)
+                                prev = runtime_by_id.get(jid)
+                                if not prev or (entry.get('last_sync') or 0) > (prev.get('last_sync') or 0):
+                                    runtime_by_id[jid] = entry
+                    except Exception:
+                        continue
+                for j in jobs:
+                    rt = runtime_by_id.get(j.get('id'))
+                    if rt:
+                        for k in ('last_sync', 'last_try', 'duration', 'state', 'error', 'fail_count', 'pid'):
+                            if k in rt and rt[k] is not None:
+                                j.setdefault(k, rt[k])
+            except Exception as _enrich_err:
+                self.logger.debug(f"Replication runtime enrichment failed: {_enrich_err}")
+
+            return jobs
         except Exception as e:
             self.logger.error(f"Error getting replication jobs: {e}")
             return []
