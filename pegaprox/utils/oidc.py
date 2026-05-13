@@ -157,7 +157,19 @@ def get_oidc_endpoints(config: dict) -> dict:
                 sanitize_outbound_url(discovery_url)
             except SsrfError as guard_err:
                 logging.warning(f"[OIDC] discovery_url rejected by SSRF guard: {guard_err}")
-                return None
+                # MK May 2026 (#188 follow-up): never return None — callers
+                # crash with `'NoneType' object has no attribute 'get'`. Return
+                # a structured dict with an `_error` flag so the test endpoint
+                # can surface "your authority URL is malformed" instead of 500.
+                return {
+                    'authorization': '', 'token': '', 'jwks': '', 'userinfo': '',
+                    'graph_me': '', 'graph_groups': '',
+                    '_discovery_used': False,
+                    '_error': 'ssrf_guard_rejected',
+                    '_error_detail': f"Discovery URL '{discovery_url}' rejected by URL safety guard: {guard_err}. "
+                                     f"Authority/issuer URL is probably empty, malformed, or pointing at a "
+                                     f"local/private address. Fix the OIDC settings and retry.",
+                }
             resp = requests.get(discovery_url, timeout=15, verify=not skip_ssl)
             if resp.status_code == 200:
                 try:

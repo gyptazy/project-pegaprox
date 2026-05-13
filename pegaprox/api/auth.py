@@ -291,14 +291,39 @@ def oidc_test_connection():
         if key in data:
             short_key = key.replace('oidc_', '')
             config[short_key] = data[key]
+    # MK May 2026 (#188 follow-up): accept `oidc_issuer` as an alias for
+    # `oidc_authority`. The OIDC spec calls it the "issuer", and external
+    # clients / CLI testers / future-Authentik-templates may send the
+    # standard term. Drop it onto `config['authority']` so the rest of the
+    # endpoint-resolution code (which reads `config.get('authority')`)
+    # picks it up unchanged.
+    if 'oidc_issuer' in data and not config.get('authority'):
+        config['authority'] = data['oidc_issuer']
     
     results = []
 
     # Step 1: Check endpoints exist
-    endpoints = get_oidc_endpoints(config)
+    endpoints = get_oidc_endpoints(config) or {}
     cloud_env = config.get('cloud_environment', 'commercial')
     env_label = {'commercial': 'Commercial', 'gcc': 'GCC', 'gcc_high': 'GCC High', 'dod': 'DoD'}.get(cloud_env, cloud_env)
-    results.append({'step': 'Configuration', 'status': 'ok', 'detail': f"Provider: {config['provider']}, Tenant: {config.get('tenant_id', 'N/A')}, Cloud: {env_label}"})
+    results.append({'step': 'Configuration', 'status': 'ok',
+                    'detail': f"Provider: {config.get('provider', 'unknown')}, Tenant: {config.get('tenant_id') or 'N/A'}, Cloud: {env_label}"})
+
+    # MK May 2026 (#188 follow-up): if endpoint resolution failed outright
+    # (e.g. authority is empty / malformed → SSRF guard rejects discovery URL,
+    # or Entra config has no tenant), surface a clean error instead of
+    # cascading into AttributeError/KeyError on the empty endpoints dict.
+    if endpoints.get('_error'):
+        results.append({'step': 'Endpoint Resolution', 'status': 'error',
+                        'detail': endpoints.get('_error_detail') or endpoints['_error']})
+        return jsonify({'success': False, 'results': results})
+
+    if not endpoints.get('authorization') and not endpoints.get('jwks'):
+        results.append({'step': 'Endpoint Resolution', 'status': 'error',
+                        'detail': "Could not derive authorization/JWKS URLs. Check that the "
+                                  "OIDC authority/issuer URL is set and reachable, and (for Entra) "
+                                  "that the tenant_id is configured."})
+        return jsonify({'success': False, 'results': results})
 
     # NS Apr 2026 (#188) — surface whether discovery succeeded so admins immediately see when
     # PegaProx is using the (often wrong) issuer-relative fallback.
@@ -326,7 +351,7 @@ def oidc_test_connection():
                             'detail': f"HTTP {resp.status_code}{hint}"})
     except Exception as e:
         results.append({'step': 'Authorization Endpoint', 'status': 'error', 'detail': str(e)})
-    
+
     # Step 3: Test JWKS endpoint
     try:
         resp = requests.get(endpoints['jwks'], timeout=10)
@@ -337,19 +362,20 @@ def oidc_test_connection():
             results.append({'step': 'JWKS Endpoint', 'status': 'error', 'detail': f"HTTP {resp.status_code}"})
     except Exception as e:
         results.append({'step': 'JWKS Endpoint', 'status': 'error', 'detail': str(e)})
-    
+
     # Step 4: Check client_id is set
-    if config['client_id']:
-        results.append({'step': 'Client ID', 'status': 'ok', 'detail': f"{config['client_id'][:8]}..."})
+    client_id = config.get('client_id') or ''
+    if client_id:
+        results.append({'step': 'Client ID', 'status': 'ok', 'detail': f"{client_id[:8]}..."})
     else:
         results.append({'step': 'Client ID', 'status': 'warning', 'detail': 'Not configured'})
-    
+
     # Step 5: Check redirect URI
     if config.get('redirect_uri'):
         results.append({'step': 'Redirect URI', 'status': 'ok', 'detail': config['redirect_uri']})
     else:
         results.append({'step': 'Redirect URI', 'status': 'warning', 'detail': 'Not configured - will auto-detect'})
-    
+
     all_ok = all(r['status'] == 'ok' for r in results)
     return jsonify({'success': all_ok, 'results': results})
 

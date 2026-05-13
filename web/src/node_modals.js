@@ -3022,12 +3022,21 @@
                                                                                         onClick={async () => {
                                                                                             const action = osd.in ? 'out' : 'in';
                                                                                             if (!confirm(`Mark OSD ${osd.id} as ${action.toUpperCase()}?`)) return;
+                                                                                            // MK May 2026 (#408 family): destructive POST with silent catch.
                                                                                             try {
-                                                                                                await fetch(`${API_URL}/clusters/${clusterId}/nodes/${node}/ceph/osd/${osd.id}/${action}`, {
+                                                                                                const res = await fetch(`${API_URL}/clusters/${clusterId}/nodes/${node}/ceph/osd/${osd.id}/${action}`, {
                                                                                                     method: 'POST', credentials: 'include', headers: authHeaders
                                                                                                 });
-                                                                                                loadTabData('ceph');
-                                                                                            } catch (e) {}
+                                                                                                if (res?.ok) {
+                                                                                                    addToast(`OSD ${osd.id} marked ${action.toUpperCase()}`, 'success');
+                                                                                                    loadTabData('ceph');
+                                                                                                } else {
+                                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                                    addToast(err.error || `Failed to mark OSD ${action} (HTTP ${res?.status || '?'})`, 'error');
+                                                                                                }
+                                                                                            } catch (e) {
+                                                                                                addToast(`Failed to mark OSD ${action}: ${e.message || e}`, 'error');
+                                                                                            }
                                                                                         }}
                                                                                         className="px-2 py-1 text-xs bg-proxmox-dark hover:bg-proxmox-hover rounded transition-colors"
                                                                                     >
@@ -3036,11 +3045,16 @@
                                                                                     <button
                                                                                         onClick={async () => {
                                                                                             try {
-                                                                                                await fetch(`${API_URL}/clusters/${clusterId}/nodes/${node}/ceph/osd/${osd.id}/scrub`, {
+                                                                                                const res = await fetch(`${API_URL}/clusters/${clusterId}/nodes/${node}/ceph/osd/${osd.id}/scrub`, {
                                                                                                     method: 'POST', credentials: 'include', headers: authHeaders
                                                                                                 });
-                                                                                                addToast('Scrub started', 'success');
-                                                                                            } catch (e) {}
+                                                                                                if (res?.ok) {
+                                                                                                    addToast('Scrub started', 'success');
+                                                                                                } else {
+                                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                                    addToast(err.error || `Failed to start scrub (HTTP ${res?.status || '?'})`, 'error');
+                                                                                                }
+                                                                                            } catch (e) { addToast(`Failed to start scrub: ${e.message || e}`, 'error'); }
                                                                                         }}
                                                                                         className="px-2 py-1 text-xs bg-proxmox-dark hover:bg-proxmox-hover rounded transition-colors"
                                                                                     >

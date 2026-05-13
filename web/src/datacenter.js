@@ -6143,10 +6143,20 @@
                                                                                     const action = osd.in ? 'out' : 'in';
                                                                                     const host = osd.host || cephNode;
                                                                                     if (!confirm(`Mark OSD ${osd.id} as ${action.toUpperCase()}?`)) return;
+                                                                                    // MK May 2026 (#408 family): destructive POST with silent
+                                                                                    // catch — surface success/error.
                                                                                     try {
-                                                                                        await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${host}/ceph/osd/${osd.id}/${action}`, { method: 'POST' });
-                                                                                        fetchCephData();
-                                                                                    } catch (e) {}
+                                                                                        const res = await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${host}/ceph/osd/${osd.id}/${action}`, { method: 'POST' });
+                                                                                        if (res?.ok) {
+                                                                                            addToast(`OSD ${osd.id} marked ${action.toUpperCase()}`, 'success');
+                                                                                            fetchCephData();
+                                                                                        } else {
+                                                                                            const err = await res.json().catch(() => ({}));
+                                                                                            addToast(err.error || `Failed to mark OSD ${action} (HTTP ${res?.status || '?'})`, 'error');
+                                                                                        }
+                                                                                    } catch (e) {
+                                                                                        addToast(`Failed to mark OSD ${action}: ${e.message || e}`, 'error');
+                                                                                    }
                                                                                 }}
                                                                                 className="px-2 py-1 text-xs bg-proxmox-dark hover:bg-proxmox-hover rounded transition-colors"
                                                                                 title={osd.in ? 'Mark Out' : 'Mark In'}
@@ -6157,9 +6167,14 @@
                                                                                 onClick={async () => {
                                                                                     const host = osd.host || cephNode;
                                                                                     try {
-                                                                                        await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${host}/ceph/osd/${osd.id}/scrub`, { method: 'POST' });
-                                                                                        addToast('Scrub started', 'success');
-                                                                                    } catch (e) {}
+                                                                                        const res = await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${host}/ceph/osd/${osd.id}/scrub`, { method: 'POST' });
+                                                                                        if (res?.ok) {
+                                                                                            addToast('Scrub started', 'success');
+                                                                                        } else {
+                                                                                            const err = await res.json().catch(() => ({}));
+                                                                                            addToast(err.error || `Failed to start scrub (HTTP ${res?.status || '?'})`, 'error');
+                                                                                        }
+                                                                                    } catch (e) { addToast(`Failed to start scrub: ${e.message || e}`, 'error'); }
                                                                                 }}
                                                                                 className="px-2 py-1 text-xs bg-proxmox-dark hover:bg-proxmox-hover rounded transition-colors"
                                                                                 title="Scrub"
@@ -6224,10 +6239,20 @@
                                                                             onClick={async () => {
                                                                                 if (!confirm(`Delete monitor "${mon.name}"?`)) return;
                                                                                 const host = mon.host || mon.name;
+                                                                                // MK May 2026 (#408 sibling): same silent-catch
+                                                                                // pattern as the pool-delete; surface outcome.
                                                                                 try {
-                                                                                    await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${host}/ceph/mon/${mon.name}`, { method: 'DELETE' });
-                                                                                    fetchCephData();
-                                                                                } catch (e) {}
+                                                                                    const res = await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${host}/ceph/mon/${mon.name}`, { method: 'DELETE' });
+                                                                                    if (res?.ok) {
+                                                                                        addToast(t('cephMonDeleted') || `Monitor "${mon.name}" deleted`, 'success');
+                                                                                        fetchCephData();
+                                                                                    } else {
+                                                                                        const err = await res.json().catch(() => ({}));
+                                                                                        addToast(err.error || `Failed to delete monitor (HTTP ${res?.status || '?'})`, 'error');
+                                                                                    }
+                                                                                } catch (e) {
+                                                                                    addToast(`Failed to delete monitor: ${e.message || e}`, 'error');
+                                                                                }
                                                                             }}
                                                                             className="p-1.5 hover:bg-red-500/20 rounded text-red-400 transition-colors"
                                                                         >
@@ -6286,10 +6311,21 @@
                                                                             onClick={async () => {
                                                                                 const name = pool.pool_name || pool.name;
                                                                                 if (!confirm(`Delete pool "${name}"? This cannot be undone!`)) return;
+                                                                                // MK May 2026 (#408): silent catch swallowed PVE
+                                                                                // permission errors / 404s — reporter saw "no
+                                                                                // effect". Now surfaces the actual outcome.
                                                                                 try {
-                                                                                    await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${cephNode}/ceph/pool/${name}`, { method: 'DELETE' });
-                                                                                    fetchCephData();
-                                                                                } catch (e) {}
+                                                                                    const res = await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${cephNode}/ceph/pool/${name}`, { method: 'DELETE' });
+                                                                                    if (res?.ok) {
+                                                                                        addToast(t('cephPoolDeleted') || `Pool "${name}" deleted`, 'success');
+                                                                                        fetchCephData();
+                                                                                    } else {
+                                                                                        const err = await res.json().catch(() => ({}));
+                                                                                        addToast(err.error || `Failed to delete pool (HTTP ${res?.status || '?'})`, 'error');
+                                                                                    }
+                                                                                } catch (e) {
+                                                                                    addToast(`Failed to delete pool: ${e.message || e}`, 'error');
+                                                                                }
                                                                             }}
                                                                             className="p-1.5 hover:bg-red-500/20 rounded text-red-400 transition-colors"
                                                                         >
@@ -6329,10 +6365,19 @@
                                                                     <button
                                                                         onClick={async () => {
                                                                             if (!confirm(`Delete CephFS "${fs.name}"? This will destroy all data!`)) return;
+                                                                            // MK May 2026 (#408 family): destructive DELETE with silent catch.
                                                                             try {
-                                                                                await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${cephNode}/ceph/fs/${fs.name}`, { method: 'DELETE' });
-                                                                                fetchCephData();
-                                                                            } catch (e) {}
+                                                                                const res = await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${cephNode}/ceph/fs/${fs.name}`, { method: 'DELETE' });
+                                                                                if (res?.ok) {
+                                                                                    addToast(`CephFS "${fs.name}" deleted`, 'success');
+                                                                                    fetchCephData();
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to delete CephFS (HTTP ${res?.status || '?'})`, 'error');
+                                                                                }
+                                                                            } catch (e) {
+                                                                                addToast(`Failed to delete CephFS: ${e.message || e}`, 'error');
+                                                                            }
                                                                         }}
                                                                         className="p-1.5 hover:bg-red-500/20 rounded text-red-400 transition-colors"
                                                                     >
@@ -6832,11 +6877,18 @@
                                                                         body: JSON.stringify(newPool)
                                                                     });
                                                                     if (res?.ok) {
+                                                                        addToast(`Pool "${newPool.name}" created`, 'success');
                                                                         setShowCreatePool(false);
                                                                         setNewPool({ name: '', size: 3, min_size: 2, pg_num: 128 });
                                                                         fetchCephData();
+                                                                    } else {
+                                                                        const err = await res.json().catch(() => ({}));
+                                                                        addToast(err.error || `Failed to create pool (HTTP ${res?.status || '?'})`, 'error');
                                                                     }
-                                                                } catch (e) {}
+                                                                    // MK May 2026 (#408 family): was silent on error.
+                                                                } catch (e) {
+                                                                    addToast(`Failed to create pool: ${e.message || e}`, 'error');
+                                                                }
                                                             }}
                                                             className="px-4 py-2 bg-proxmox-orange rounded-lg text-white hover:bg-orange-600 transition-colors"
                                                         >
@@ -6868,14 +6920,27 @@
                                                         <button onClick={() => setShowCreateMon(false)} className="px-4 py-2 bg-proxmox-dark rounded-lg hover:bg-proxmox-hover transition-colors">{t('cancel')}</button>
                                                         <button
                                                             onClick={async () => {
-                                                                if (!cephNode) return;
+                                                                if (!cephNode) {
+                                                                    addToast(t('selectNodeFirst') || 'Select a node first', 'error');
+                                                                    return;
+                                                                }
+                                                                // MK May 2026 (#407): silent catch swallowed all errors — modal
+                                                                // would stay open with no toast. Now: success-toast on 200,
+                                                                // error-toast with status code + body on failure, network errors
+                                                                // surfaced explicitly.
                                                                 try {
                                                                     const res = await authFetch(`${API_URL}/clusters/${clusterId}/nodes/${cephNode}/ceph/mon/${cephNode}`, { method: 'POST' });
                                                                     if (res?.ok) {
+                                                                        addToast(t('cephMonCreated') || `Monitor created on ${cephNode}`, 'success');
                                                                         setShowCreateMon(false);
                                                                         fetchCephData();
+                                                                    } else {
+                                                                        const err = await res.json().catch(() => ({}));
+                                                                        addToast(err.error || `Failed to create monitor (HTTP ${res?.status || '?'})`, 'error');
                                                                     }
-                                                                } catch (e) {}
+                                                                } catch (e) {
+                                                                    addToast(`Failed to create monitor: ${e.message || e}`, 'error');
+                                                                }
                                                             }}
                                                             className="px-4 py-2 bg-proxmox-orange rounded-lg text-white hover:bg-orange-600 transition-colors"
                                                         >

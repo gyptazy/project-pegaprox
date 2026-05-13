@@ -49,8 +49,13 @@
                                                     headers: { 'Content-Type': 'application/json' },
                                                     body: JSON.stringify({ cidr: newCidr })
                                                 });
-                                                if (res?.ok) { loadEntries(); setNewCidr(''); }
-                                            } catch (e) {}
+                                                if (res?.ok) {
+                                                    loadEntries(); setNewCidr('');
+                                                } else {
+                                                    const err = await res.json().catch(() => ({}));
+                                                    addToast(err.error || `Operation failed (HTTP ${res?.status || '?'})`, 'error');
+                                                }
+                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                         }
                                     }}
                                 />
@@ -63,8 +68,13 @@
                                                 headers: { 'Content-Type': 'application/json' },
                                                 body: JSON.stringify({ cidr: newCidr })
                                             });
-                                            if (res?.ok) { loadEntries(); setNewCidr(''); }
-                                        } catch (e) {}
+                                            if (res?.ok) {
+                                                loadEntries(); setNewCidr('');
+                                            } else {
+                                                const err = await res.json().catch(() => ({}));
+                                                addToast(err.error || `Operation failed (HTTP ${res?.status || '?'})`, 'error');
+                                            }
+                                        } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                     }}
                                     className="px-3 py-1.5 bg-proxmox-orange hover:bg-orange-600 rounded-lg text-sm text-white transition-colors"
                                 >
@@ -84,8 +94,13 @@
                                                     onClick={async () => {
                                                         try {
                                                             const res = await authFetch(`${API_URL}/clusters/${clusterId}/vms/${vm.node}/${vm.type}/${vm.vmid}/firewall/ipset/${ipsetName}/${encodeURIComponent(entry.cidr)}`, { method: 'DELETE' });
-                                                            if (res?.ok) loadEntries();
-                                                        } catch (e) {}
+                                                            if (res?.ok) {
+                                                                loadEntries();
+                                                            } else {
+                                                                const err = await res.json().catch(() => ({}));
+                                                                addToast(err.error || `Operation failed (HTTP ${res?.status || '?'})`, 'error');
+                                                            }
+                                                        } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                     }}
                                                     className="p-1 hover:bg-red-500/20 rounded text-red-400 transition-colors"
                                                 >
@@ -3468,8 +3483,11 @@
                                                                                                     setFwRules(prev => prev.map(r =>
                                                                                                         r.pos === rule.pos ? { ...r, enable: rule.enable ? 0 : 1 } : r
                                                                                                     ));
+                                                                                                } else {
+                                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                                    addToast(err.error || `Failed to toggle rule (HTTP ${res?.status || '?'})`, 'error');
                                                                                                 }
-                                                                                            } catch (e) {}
+                                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                                         }}
                                                                                         className={`w-8 h-5 rounded-full transition-colors ${rule.enable ? 'bg-green-500' : 'bg-gray-600'}`}
                                                                                     >
@@ -3483,8 +3501,13 @@
                                                                                             if (!confirm(t('confirmDeleteRule') || 'Delete this firewall rule?')) return;
                                                                                             try {
                                                                                                 const res = await authFetch(`${API_URL}/clusters/${clusterId}/vms/${vm.node}/${vm.type}/${vm.vmid}/firewall/rules/${rule.pos}`, { method: 'DELETE' });
-                                                                                                if (res?.ok) fetchFirewallData();
-                                                                                            } catch (e) {}
+                                                                                                if (res?.ok) {
+                                                                                                    fetchFirewallData();
+                                                                                                } else {
+                                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                                    addToast(err.error || `Operation failed (HTTP ${res?.status || '?'})`, 'error');
+                                                                                                }
+                                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                                         }}
                                                                                         className="p-1.5 hover:bg-red-500/20 rounded text-red-400 transition-colors"
                                                                                     >
@@ -3518,8 +3541,13 @@
                                                                                     headers: { 'Content-Type': 'application/json' },
                                                                                     body: JSON.stringify({ enable: newVal })
                                                                                 });
-                                                                                if (res?.ok) setFwOptions(prev => ({ ...prev, enable: newVal }));
-                                                                            } catch (e) {}
+                                                                                if (res?.ok) {
+                                                                                    setFwOptions(prev => ({ ...prev, enable: newVal }));
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to update firewall option (HTTP ${res?.status || '?'})`, 'error');
+                                                                                }
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className={`px-4 py-2 rounded-lg font-medium transition-colors ${
                                                                             fwOptions.enable
@@ -3541,8 +3569,13 @@
                                                                                     headers: { 'Content-Type': 'application/json' },
                                                                                     body: JSON.stringify({ policy_in: e.target.value })
                                                                                 });
-                                                                                if (res?.ok) setFwOptions(prev => ({ ...prev, policy_in: e.target.value }));
-                                                                            } catch (e) {}
+                                                                                if (res?.ok) {
+                                                                                    setFwOptions(prev => ({ ...prev, policy_in: e.target.value }));
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to update firewall option (HTTP ${res?.status || '?'})`, 'error');
+                                                                                }
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className="w-full bg-proxmox-darker border border-proxmox-border rounded-lg p-2 text-white"
                                                                     >
@@ -3562,8 +3595,13 @@
                                                                                     headers: { 'Content-Type': 'application/json' },
                                                                                     body: JSON.stringify({ policy_out: e.target.value })
                                                                                 });
-                                                                                if (res?.ok) setFwOptions(prev => ({ ...prev, policy_out: e.target.value }));
-                                                                            } catch (e) {}
+                                                                                if (res?.ok) {
+                                                                                    setFwOptions(prev => ({ ...prev, policy_out: e.target.value }));
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to update firewall option (HTTP ${res?.status || '?'})`, 'error');
+                                                                                }
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className="w-full bg-proxmox-darker border border-proxmox-border rounded-lg p-2 text-white"
                                                                     >
@@ -3583,8 +3621,13 @@
                                                                                     headers: { 'Content-Type': 'application/json' },
                                                                                     body: JSON.stringify({ dhcp: newVal })
                                                                                 });
-                                                                                if (res?.ok) setFwOptions(prev => ({ ...prev, dhcp: newVal }));
-                                                                            } catch (e) {}
+                                                                                if (res?.ok) {
+                                                                                    setFwOptions(prev => ({ ...prev, dhcp: newVal }));
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to update firewall option (HTTP ${res?.status || '?'})`, 'error');
+                                                                                }
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
                                                                             fwOptions.dhcp ? 'bg-green-500/20 text-green-400' : 'bg-gray-600/30 text-gray-400'
@@ -3604,8 +3647,13 @@
                                                                                     headers: { 'Content-Type': 'application/json' },
                                                                                     body: JSON.stringify({ ndp: newVal })
                                                                                 });
-                                                                                if (res?.ok) setFwOptions(prev => ({ ...prev, ndp: newVal }));
-                                                                            } catch (e) {}
+                                                                                if (res?.ok) {
+                                                                                    setFwOptions(prev => ({ ...prev, ndp: newVal }));
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to update firewall option (HTTP ${res?.status || '?'})`, 'error');
+                                                                                }
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
                                                                             fwOptions.ndp ? 'bg-green-500/20 text-green-400' : 'bg-gray-600/30 text-gray-400'
@@ -3625,8 +3673,13 @@
                                                                                     headers: { 'Content-Type': 'application/json' },
                                                                                     body: JSON.stringify({ radv: newVal })
                                                                                 });
-                                                                                if (res?.ok) setFwOptions(prev => ({ ...prev, radv: newVal }));
-                                                                            } catch (e) {}
+                                                                                if (res?.ok) {
+                                                                                    setFwOptions(prev => ({ ...prev, radv: newVal }));
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to update firewall option (HTTP ${res?.status || '?'})`, 'error');
+                                                                                }
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
                                                                             fwOptions.radv ? 'bg-green-500/20 text-green-400' : 'bg-gray-600/30 text-gray-400'
@@ -3646,8 +3699,13 @@
                                                                                     headers: { 'Content-Type': 'application/json' },
                                                                                     body: JSON.stringify({ macfilter: newVal })
                                                                                 });
-                                                                                if (res?.ok) setFwOptions(prev => ({ ...prev, macfilter: newVal }));
-                                                                            } catch (e) {}
+                                                                                if (res?.ok) {
+                                                                                    setFwOptions(prev => ({ ...prev, macfilter: newVal }));
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to update firewall option (HTTP ${res?.status || '?'})`, 'error');
+                                                                                }
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
                                                                             fwOptions.macfilter ? 'bg-green-500/20 text-green-400' : 'bg-gray-600/30 text-gray-400'
@@ -3667,8 +3725,13 @@
                                                                                     headers: { 'Content-Type': 'application/json' },
                                                                                     body: JSON.stringify({ log_level_in: e.target.value })
                                                                                 });
-                                                                                if (res?.ok) setFwOptions(prev => ({ ...prev, log_level_in: e.target.value }));
-                                                                            } catch (e) {}
+                                                                                if (res?.ok) {
+                                                                                    setFwOptions(prev => ({ ...prev, log_level_in: e.target.value }));
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to update firewall option (HTTP ${res?.status || '?'})`, 'error');
+                                                                                }
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className="w-full bg-proxmox-darker border border-proxmox-border rounded-lg p-2 text-white"
                                                                     >
@@ -3694,8 +3757,13 @@
                                                                                     headers: { 'Content-Type': 'application/json' },
                                                                                     body: JSON.stringify({ log_level_out: e.target.value })
                                                                                 });
-                                                                                if (res?.ok) setFwOptions(prev => ({ ...prev, log_level_out: e.target.value }));
-                                                                            } catch (e) {}
+                                                                                if (res?.ok) {
+                                                                                    setFwOptions(prev => ({ ...prev, log_level_out: e.target.value }));
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to update firewall option (HTTP ${res?.status || '?'})`, 'error');
+                                                                                }
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className="w-full bg-proxmox-darker border border-proxmox-border rounded-lg p-2 text-white"
                                                                     >
@@ -3750,8 +3818,13 @@
                                                                                             if (!confirm(`Delete alias "${alias.name}"?`)) return;
                                                                                             try {
                                                                                                 const res = await authFetch(`${API_URL}/clusters/${clusterId}/vms/${vm.node}/${vm.type}/${vm.vmid}/firewall/aliases/${alias.name}`, { method: 'DELETE' });
-                                                                                                if (res?.ok) fetchFirewallData();
-                                                                                            } catch (e) {}
+                                                                                                if (res?.ok) {
+                                                                                                    fetchFirewallData();
+                                                                                                } else {
+                                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                                    addToast(err.error || `Operation failed (HTTP ${res?.status || '?'})`, 'error');
+                                                                                                }
+                                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                                         }}
                                                                                         className="p-1.5 hover:bg-red-500/20 rounded text-red-400 transition-colors"
                                                                                     >
@@ -3799,8 +3872,13 @@
                                                                                 if (!confirm(`Delete IP set "${ipset.name}"?`)) return;
                                                                                 try {
                                                                                     const res = await authFetch(`${API_URL}/clusters/${clusterId}/vms/${vm.node}/${vm.type}/${vm.vmid}/firewall/ipset/${ipset.name}`, { method: 'DELETE' });
-                                                                                    if (res?.ok) fetchFirewallData();
-                                                                                } catch (e) {}
+                                                                                    if (res?.ok) {
+                                                                                        fetchFirewallData();
+                                                                                    } else {
+                                                                                        const err = await res.json().catch(() => ({}));
+                                                                                        addToast(err.error || `Operation failed (HTTP ${res?.status || '?'})`, 'error');
+                                                                                    }
+                                                                                } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                             }}
                                                                             className="p-1.5 hover:bg-red-500/20 rounded text-red-400 transition-colors"
                                                                         >
@@ -4100,8 +4178,11 @@
                                                                                     fetchFirewallData();
                                                                                     setShowAddFwAlias(false);
                                                                                     setNewFwAlias({ name: '', cidr: '', comment: '' });
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to add alias (HTTP ${res?.status || '?'})`, 'error');
                                                                                 }
-                                                                            } catch (e) {}
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className="px-4 py-2 bg-proxmox-orange rounded-lg text-white hover:bg-orange-600 transition-colors"
                                                                     >
@@ -4155,8 +4236,11 @@
                                                                                     fetchFirewallData();
                                                                                     setShowAddFwIpset(false);
                                                                                     setNewFwIpset({ name: '', comment: '' });
+                                                                                } else {
+                                                                                    const err = await res.json().catch(() => ({}));
+                                                                                    addToast(err.error || `Failed to add IP set (HTTP ${res?.status || '?'})`, 'error');
                                                                                 }
-                                                                            } catch (e) {}
+                                                                            } catch (e) { addToast(`Network error: ${e.message || e}`, 'error'); }
                                                                         }}
                                                                         className="px-4 py-2 bg-proxmox-orange rounded-lg text-white hover:bg-orange-600 transition-colors"
                                                                     >
@@ -5767,7 +5851,7 @@
                 <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60">
                     <div className="w-full max-w-sm bg-proxmox-card border border-proxmox-border rounded-xl p-6 animate-scale-in">
                         <h3 className="text-lg font-semibold text-white mb-4">{t('resizeDisk') || 'Resize Disk'}</h3>
-                        <p className="text-sm text-gray-400 mb-4">Aktuelle Groesse: {disk.size}</p>
+                        <p className="text-sm text-gray-400 mb-4">{t('currentSize') || 'Current size'}: {disk.size}</p>
                         <div>
                             <label className="block text-xs text-gray-400 mb-1">{t('resizeDiskHint') || 'Increase by (e.g. +10G) or new size'}</label>
                             <input
@@ -5779,7 +5863,7 @@
                         </div>
                         <div className="flex justify-end gap-3 mt-6">
                             <button onClick={onClose} className="px-4 py-2 text-gray-300 hover:text-white">{t('cancel')}</button>
-                            <button onClick={() => onResize(size)} className="px-4 py-2 bg-green-600 rounded-lg text-white hover:bg-green-700">Vergroessern</button>
+                            <button onClick={() => onResize(size)} className="px-4 py-2 bg-green-600 rounded-lg text-white hover:bg-green-700">{t('resize') || 'Resize'}</button>
                         </div>
                     </div>
                 </div>
