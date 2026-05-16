@@ -149,6 +149,23 @@
             const [loading, setLoading] = useState(false);
             const [loadingVmid, setLoadingVmid] = useState(true);
             const [showCloudInit, setShowCloudInit] = useState(false);
+            // MK May 2026 (#416 KowMangler): freeze node-list order at mount time so the
+            // dropdown doesn't reshuffle every time the dashboard's cpu/mem poll fires.
+            // Parent keeps updating its `nodes` prop with fresh load values — that's
+            // fine for the rest of the UI, but for the target-node selector the user
+            // wants the list to stay put while they're picking from it.
+            const stableNodes = useMemo(() => {
+                const src = Array.isArray(nodes) ? nodes : [];
+                // Preserve whatever ordering the parent passed in at mount; if the parent
+                // hadn't sorted yet (race on first render), fall back to alpha so the
+                // snapshot at least has a deterministic shape.
+                return [...src].sort((a, b) => {
+                    const an = (typeof a === 'string' ? a : a?.name) || '';
+                    const bn = (typeof b === 'string' ? b : b?.name) || '';
+                    return an.localeCompare(bn);
+                });
+                // eslint-disable-next-line react-hooks/exhaustive-deps
+            }, []);  // intentionally empty deps — snapshot once on mount
 
             const isQemu = vm.type === 'qemu';
 
@@ -226,7 +243,7 @@
                                     onChange={(e) => setCloneConfig({...cloneConfig, target_node: e.target.value})}
                                     className="w-full px-3 py-2 bg-proxmox-dark border border-proxmox-border rounded-lg text-white text-sm"
                                 >
-                                    {(nodes || []).map(node => {
+                                    {stableNodes.map(node => {
                                         const nodeName = typeof node === 'string' ? node : node.name;
                                         const isSameNode = nodeName === vm.node;
                                         return(
