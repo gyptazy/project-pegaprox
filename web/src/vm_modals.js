@@ -2887,6 +2887,7 @@
             const [detectedIsos, setDetectedIsos] = useState([]);
             const [bootOrderIssues, setBootOrderIssues] = useState([]);
             const [estimatedDiskGb, setEstimatedDiskGb] = useState(0);  // Track disk size for warnings
+            const [unusedEntries, setUnusedEntries] = useState([]);  // MK May 2026 (#414): detached-but-not-removed disks/ISOs
 
             const availableClusters = clusters.filter(c => c.id !== sourceCluster?.id);
             const isQemu = vm.type === 'qemu';
@@ -2976,6 +2977,24 @@
                         disks.push({ id: key, storage: stor, size: sizeMatch ? sizeMatch[1] : '' });
                     });
                     setSourceDisks(disks);
+
+                    // MK May 2026 (#414 KowMangler): pick up `unused0`, `unused1`, ... entries.
+                    // PVE leaves a reference to the volume in the VM config even after a
+                    // "Detach" in the UI — the volume is just moved into the unused slot.
+                    // Cross-cluster migration then tries to migrate that reference too, and
+                    // if it points at local-only storage (e.g. an ISO on `local`) PVE bails
+                    // with the cryptic "storage 'local' does not support vm images" error.
+                    // Surface them up-front so the user can clean them in VM → Configure → Hardware.
+                    const unused = [];
+                    Object.keys(config).sort().forEach(key => {
+                        if (!key.match(/^unused\d+$/)) return;
+                        const val = config[key];
+                        if (typeof val !== 'string' || !val) return;
+                        const stor = val.includes(':') ? val.split(':')[0] : '';
+                        const localLooking = /^(local|local-lvm|local-zfs)$/.test(stor);
+                        unused.push({ id: key, value: val, storage: stor, isLocal: localLooking });
+                    });
+                    setUnusedEntries(unused);
                     setTargetStorageMap(prev => {
                         const m = {};
                         disks.forEach(d => { m[d.storage] = prev[d.storage] || d.storage; });
@@ -3189,9 +3208,9 @@
                                     </div>
                                 </div>
                             </div>
-                            
+
                             {/* Migration Warnings */}
-                            {(hasCdDvd || bootOrderIssues.length > 0) && (
+                            {(hasCdDvd || bootOrderIssues.length > 0 || unusedEntries.length > 0) && (
                                 <div className="space-y-2">
                                     {hasCdDvd && (
                                         <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
@@ -3229,6 +3248,33 @@
                                                 <p className="text-yellow-300/70 text-xs">
                                                     {t('bootOrderWarning') || 'Boot order references non-existent disks'}: <code className="bg-yellow-500/10 px-1 rounded">{bootOrderIssues.join(', ')}</code>
                                                 </p>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {/* MK May 2026 (#414 KowMangler): detached disks/ISOs that PVE still holds a reference to */}
+                                    {unusedEntries.length > 0 && (
+                                        <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-yellow-400 text-lg">📎</span>
+                                                <div className="flex-1">
+                                                    <p className="text-yellow-400 font-medium text-sm">{t('detachedDisksTitle') || 'Detached Disks/ISOs Still Referenced'}</p>
+                                                    <p className="text-yellow-300/70 text-xs mt-1">
+                                                        {t('detachedDisksWarning') || "PVE keeps detached volumes as 'unused*' references on the VM. Cross-cluster migration tries to move them too — if any sit on local-only storage it will fail with a cryptic 'storage does not support vm images' error. Clean them up in VM → Configure → Hardware → Unused Disks before starting."}
+                                                    </p>
+                                                    <div className="mt-2 space-y-1">
+                                                        {unusedEntries.map((u, idx) => (
+                                                            <div key={idx} className="flex items-center gap-2 text-xs flex-wrap">
+                                                                <span className="text-gray-400">{u.id}:</span>
+                                                                <code className="text-yellow-300 bg-yellow-500/10 px-1 rounded break-all">{u.value}</code>
+                                                                {u.isLocal && (
+                                                                    <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded text-[10px]">
+                                                                        {t('localStorage') || 'Local'}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
                                     )}
