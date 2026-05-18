@@ -2467,8 +2467,14 @@ def iso_sync_trigger(cluster_id):
     content_type = data.get('content_type', 'iso')
     targets = data.get('target_nodes')
 
+    if content_type not in ('iso', 'vztmpl'):
+        return jsonify({'error': 'content_type must be iso or vztmpl'}), 400
     if not all([source, storage, filename]):
         return jsonify({'error': 'source_node, storage, filename required'}), 400
+    if hasattr(mgr, '_get_syncable_storage'):
+        _, storage_err = mgr._get_syncable_storage(source, storage, content_type)
+        if storage_err:
+            return jsonify({'error': storage_err}), 400
 
     def _do_sync():
         results = mgr.sync_content_to_nodes(source, storage, filename, content_type, targets)
@@ -2488,6 +2494,8 @@ def iso_sync_all(cluster_id):
     mgr = cluster_managers[cluster_id]
     data = request.get_json() or {}
     content_type = data.get('content_type', 'iso')
+    if content_type not in ('iso', 'vztmpl'):
+        return jsonify({'error': 'content_type must be iso or vztmpl'}), 400
 
     def _do_sync_all():
         status = mgr.get_content_sync_status(content_type)
@@ -2519,4 +2527,3 @@ def iso_sync_last_result(cluster_id):
     mgr = cluster_managers[cluster_id]
     result = getattr(mgr, '_sync_last_result', None)
     return jsonify(result or {})
-

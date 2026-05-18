@@ -10680,6 +10680,30 @@ echo "AGENT_INSTALLED_OK"
     
     # LW: Apr 2026 - ISO/Template sync across cluster nodes
     # for iSCSI-only setups where file-level storage isn't shared
+    @staticmethod
+    def _storage_is_shared(storage):
+        """Return True when a Proxmox storage entry is marked shared."""
+        shared = storage.get('shared', 0) if isinstance(storage, dict) else 0
+        if isinstance(shared, bool):
+            return shared
+        if isinstance(shared, (int, float)):
+            return shared != 0
+        return str(shared).strip().lower() in ('1', 'true', 'yes', 'on')
+
+    def _get_syncable_storage(self, node, storage_name, content_type='iso'):
+        """Find a non-shared storage that can participate in ISO/template sync."""
+        for storage in self.get_storage_list(node):
+            if storage.get('storage') != storage_name:
+                continue
+            if content_type not in storage.get('content', ''):
+                return None, f"Storage {storage_name} does not support {content_type}"
+            if self._storage_is_shared(storage):
+                return None, f"Storage {storage_name} is shared; ISO sync is only available for non-shared storage"
+            if not storage.get('active'):
+                return None, f"Storage {storage_name} is not active on {node}"
+            return storage, None
+        return None, f"Storage {storage_name} not found on {node}"
+
     def get_content_sync_status(self, content_type='iso'):
         """Build matrix of which ISOs/templates exist on which nodes"""
         if not self.is_connected:
@@ -10692,7 +10716,9 @@ echo "AGENT_INSTALLED_OK"
             node_files = {}
             for node in online_nodes:
                 storages = [s for s in self.get_storage_list(node)
-                            if content_type in s.get('content', '') and s.get('active')]
+                            if content_type in s.get('content', '')
+                            and s.get('active')
+                            and not self._storage_is_shared(s)]
                 files = []
                 for stor in storages:
                     url = f"https://{host}:{self.api_port}/api2/json/nodes/{node}/storage/{stor['storage']}/content"
@@ -10738,6 +10764,10 @@ echo "AGENT_INSTALLED_OK"
         if not self.is_connected:
             return [{'error': 'Not connected'}]
 
+        _, err = self._get_syncable_storage(source_node, storage, content_type)
+        if err:
+            return [{'error': err}]
+
         ns = self.get_node_status()
         online_nodes = [n for n, d in ns.items() if d.get('status') == 'online' and n != source_node]
         if target_nodes:
@@ -10757,6 +10787,10 @@ echo "AGENT_INSTALLED_OK"
 
         for tgt_node in online_nodes:
             tgt_ip = self._get_node_ip(tgt_node) or tgt_node
+            _, err = self._get_syncable_storage(tgt_node, storage, content_type)
+            if err:
+                results.append({'node': tgt_node, 'success': False, 'error': err})
+                continue
             tgt_path = self._resolve_storage_path(tgt_node, storage, content_type)
             if not tgt_path:
                 results.append({'node': tgt_node, 'success': False, 'error': f'Storage {storage} not on {tgt_node}'})
@@ -14237,4 +14271,3 @@ echo DONE""",
             self.thread.join(timeout=5)
         self.running = False
         self.logger.info(f"Stopped PegaProx manager for {self.config.name}")
-
