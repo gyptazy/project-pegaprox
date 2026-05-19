@@ -5743,16 +5743,63 @@ def _wait_for_task(mgr, task_upid, timeout=600, poll=5):
 
 
 def _cleanup_snapshot(mgr, node, vmid, vm_type, snap_name):
-    """Delete a snapshot, best-effort."""
+    """Delete a snapshot, best-effort, with NFS/ESTALE recovery.
+
+    MK May 2026 (#422 depedro-ai): On NetApp / NFS qcow2 storage, the underlying
+    `qemu-img snapshot -d` can fail with ESTALE ("Stale file handle") even
+    though PVE issued the DELETE successfully. When that happens, PVE leaves
+    the VM in `lock = snapshot-delete` state and refuses *all* subsequent
+    operations (shutdown, migrate, failover) with "VM is locked
+    (snapshot-delete)" — which is exactly the silent-failure depedro-ai hit.
+
+    Fix: always pass `force=1` so PVE removes the snapshot config entry even
+    if the on-disk delete fails. Then, if the VM is still locked afterwards
+    (defence in depth), explicitly unlock via the PVE API. xcrepl snapshots
+    are ours from end to end — operator never cares about the orphan .qcow2
+    internal slot that may be left on storage; what matters is the VM gets
+    out of the locked state cleanly.
+    """
+    url = (
+        f"https://{mgr.host}:{mgr.api_port}/api2/json/nodes/{node}"
+        f"/{vm_type}/{vmid}/snapshot/{snap_name}"
+    )
     try:
-        url = (
-            f"https://{mgr.host}:{mgr.api_port}/api2/json/nodes/{node}"
-            f"/{vm_type}/{vmid}/snapshot/{snap_name}"
-        )
-        mgr._api_delete(url)
-        logging.debug(f"[XCREPL] Deleted snapshot {snap_name} on {vmid}")
+        # `force=1` tells PVE: remove config entry even if qemu-img delete fails.
+        # Without it, NFS ESTALE → VM stuck at lock=snapshot-delete indefinitely.
+        mgr._api_delete(url, params={'force': 1})
+        logging.debug(f"[XCREPL] Deleted snapshot {snap_name} on {vmid} (force=1)")
     except Exception as e:
         logging.warning(f"[XCREPL] Could not delete snapshot {snap_name}: {e}")
+
+    # Defence in depth: explicitly check + clear the lock if still set.
+    # `qm unlock` via the API is `POST /nodes/<node>/<type>/<vmid>/status/current`
+    # with `lock=` body — actually no, that's setting. The right one is the
+    # config endpoint with `delete=lock`. Use that.
+    try:
+        cfg_url = (
+            f"https://{mgr.host}:{mgr.api_port}/api2/json/nodes/{node}"
+            f"/{vm_type}/{vmid}/config"
+        )
+        cfg_resp = mgr._api_get(cfg_url)
+        if cfg_resp is not None and cfg_resp.status_code == 200:
+            cfg = (cfg_resp.json() or {}).get('data', {}) or {}
+            current_lock = cfg.get('lock')
+            if current_lock == 'snapshot-delete':
+                logging.warning(
+                    f"[XCREPL] VM {vmid} still locked at 'snapshot-delete' after cleanup — "
+                    f"clearing lock so subsequent operations don't silently fail (#422)"
+                )
+                # PUT /config with delete=lock removes the lock field
+                from pegaprox.utils.audit import log_audit
+                try:
+                    mgr._api_put(cfg_url, data={'delete': 'lock'})
+                    log_audit(user='system', action='vm.unlock_after_xcrepl',
+                              details=f'vmid={vmid} lock=snapshot-delete cleared after cross-cluster replication cleanup',
+                              ip_address='127.0.0.1')
+                except Exception as unlock_err:
+                    logging.warning(f"[XCREPL] Could not auto-unlock VM {vmid}: {unlock_err}")
+    except Exception as e:
+        logging.debug(f"[XCREPL] Lock-state recheck on {vmid} failed (non-fatal): {e}")
 
 
 def _cleanup_clone_and_snap(mgr, node, clone_vmid, orig_vmid, vm_type, snap_name):
