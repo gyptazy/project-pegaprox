@@ -5206,20 +5206,88 @@ def _do_offline_qemuimg_copy(pve_mgr, task, esxi_host, esxi_user, esxi_pass,
 
 
 def _monitor_disk_write(pve_mgr, node, vol_path, disk_size, task, disk_key, stop_evt):
-    """Poll destination file size during dd transfer for live progress updates.
+    """Poll destination size during dd/qemu-img transfer for live progress updates.
 
-    NS Mar 2026 - #132: without this, migration sits at 0% until entire disk finishes
+    NS Mar 2026 - #132: without this, migration sits at 0% until entire disk finishes.
+
+    MK May 2026 (#438 follow-up / lab finding):
+    - Was only calling task.update_progress(), never task.log() — so the
+      progress field was visible via API polling but invisible in the task
+      log feed (which is what most operators watch). Now also logs:
+          * on each 10% threshold crossing
+          * a "no data yet" heartbeat every 60s while written stays at 0
+          * a "still copying" heartbeat every 30s while between thresholds
+    - For block-device targets (`vol_path` starts with `/dev/`), `stat -c %s`
+      returns the device size instead of bytes-written → useless. Detect that
+      once at start and emit a degraded-monitor notice so the operator knows
+      we can't estimate progress, but at least gets a heartbeat that the
+      monitor itself is still alive.
     """
+    import time as _time
+    # Detect block-device target once
+    is_block_dev = bool(vol_path) and vol_path.startswith('/dev/')
+
+    last_logged_pct = -1
+    last_log_t = _time.monotonic()
+    last_written = -1
+    start_t = _time.monotonic()
+
+    if is_block_dev:
+        task.log(f"  monitor: block-device target ({vol_path}) — progress estimate degraded, heartbeats only")
+
     while not stop_evt.is_set():
+        written = -1
         try:
-            rc, out, _ = _pve_node_exec(pve_mgr, node,
-                f"stat -c '%s' '{vol_path}' 2>/dev/null || echo 0", timeout=8)
-            if rc == 0 and str(out or '').strip().isdigit():
-                written = int(out.strip())
-                if written > 0 and disk_size > 0:
-                    task.update_progress(disk_key, min(written, disk_size), disk_size)
-        except:
-            pass  # SSH hiccup, no big deal
+            if is_block_dev:
+                # Best-effort: ask lvs for thin-volume data_percent. Path shape
+                # /dev/<vg>/<lv>. If lvs is unavailable or this isn't an LVM
+                # thin volume, fall through to heartbeat-only mode.
+                parts = vol_path.split('/')
+                # /dev/pve/vm-100-disk-0 → ['', 'dev', 'pve', 'vm-100-disk-0']
+                if len(parts) >= 4 and parts[1] == 'dev':
+                    vg, lv = parts[2], parts[3]
+                    rc, out, _ = _pve_node_exec(pve_mgr, node,
+                        f"lvs --noheadings -o data_percent {vg}/{lv} 2>/dev/null", timeout=8)
+                    s = str(out or '').strip()
+                    if rc == 0 and s and s != '':
+                        try:
+                            pct = float(s)
+                            written = int(disk_size * pct / 100)
+                        except ValueError:
+                            pass
+            else:
+                rc, out, _ = _pve_node_exec(pve_mgr, node,
+                    f"stat -c '%s' '{vol_path}' 2>/dev/null || echo 0", timeout=8)
+                if rc == 0 and str(out or '').strip().isdigit():
+                    written = int(out.strip())
+        except Exception:
+            pass  # SSH hiccup, ignore one tick
+
+        if written >= 0 and disk_size > 0:
+            task.update_progress(disk_key, min(written, disk_size), disk_size)
+            now = _time.monotonic()
+            elapsed = now - start_t
+            if written > 0:
+                pct = min(written * 100 / disk_size, 100)
+                pct_bucket = int(pct // 10)
+                last_bucket = int(last_logged_pct // 10) if last_logged_pct >= 0 else -1
+                speed_mb = (written / max(elapsed, 1)) / (1024 * 1024)
+                # threshold crossing
+                if pct_bucket > last_bucket:
+                    task.log(f"    {disk_key}: {pct:.0f}% ({written/(1024**3):.2f}/{disk_size/(1024**3):.2f} GB, ~{speed_mb:.0f} MB/s)")
+                    last_logged_pct = pct
+                    last_log_t = now
+                elif now - last_log_t >= 30:
+                    # between thresholds, but it's been a while — heartbeat
+                    task.log(f"    {disk_key}: still copying… {pct:.0f}% ({written/(1024**3):.2f}/{disk_size/(1024**3):.2f} GB, ~{speed_mb:.0f} MB/s)")
+                    last_log_t = now
+            else:
+                # written == 0 — log a "no data yet" line every 60s so the
+                # user knows the monitor is alive but nothing is moving
+                if now - last_log_t >= 60:
+                    task.log(f"    {disk_key}: monitor alive, 0 bytes written so far ({elapsed:.0f}s elapsed)")
+                    last_log_t = now
+            last_written = written
         stop_evt.wait(5)
 
 
@@ -5406,7 +5474,10 @@ def _ssh_pipe_transfer(pve_mgr, task, esxi_host, esxi_user, esxi_pass, datastore
                 f"echo RC=${{PIPESTATUS[0]}}/${{PIPESTATUS[1]}}; "
                 f"cat {dd_log}; rm -f {dd_log}"
             )
-            rc_dl, out_dl, _ = _pve_node_exec(pve_mgr, task.target_node, dl_cmd, timeout=86400)
+            # MK May 2026 (#438 follow-up): capture stderr too — when this
+            # path fails silently (HTTPS auth, network drop, curl killed),
+            # the previous `_` discard left the operator with no diagnostic.
+            rc_dl, out_dl, err_dl = _pve_node_exec(pve_mgr, task.target_node, dl_cmd, timeout=86400)
             dl_out = str(out_dl or '').strip()
             task.log(f"  HTTPS: {dl_out[-250:]}")
 
@@ -5418,6 +5489,11 @@ def _ssh_pipe_transfer(pve_mgr, task, esxi_host, esxi_user, esxi_pass, datastore
                 task.log(f"  HTTPS OK: {downloaded/(1024**3):.2f} GB")
             else:
                 task.log(f"  HTTPS incomplete: {downloaded/(1024**3):.2f} GB")
+                # Surface stderr tail when the dl is short — saves a re-bundle round
+                err_tail = (err_dl or '').strip()
+                if err_tail:
+                    for line in err_tail.splitlines()[-6:]:
+                        task.log(f"    HTTPS stderr: {line[:200]}")
         else:
             task.log(f"  HTTPS test 0 bytes - skipping HTTPS full download")
 
@@ -5443,7 +5519,12 @@ def _ssh_pipe_transfer(pve_mgr, task, esxi_host, esxi_user, esxi_pass, datastore
                 f"echo PIPE=${{PIPESTATUS[0]}}/${{PIPESTATUS[1]}}; "
                 f"cat {dd_log2}; rm -f {dd_log2}"
             )
-            rc_s, out_s, _ = _pve_node_exec(pve_mgr, task.target_node, ssh_cmd, timeout=86400)
+            # MK May 2026 (#438 follow-up): capture stderr — sshpass + ssh
+            # failure modes (auth denied, host key mismatch, missing binary)
+            # land on stderr, not stdout. The previous `_` discard meant the
+            # task log showed only "SSH: " with empty tail and no actionable
+            # diagnostic.
+            rc_s, out_s, err_s = _pve_node_exec(pve_mgr, task.target_node, ssh_cmd, timeout=86400)
             ssh_out = str(out_s or '').strip()
             task.log(f"  SSH: {ssh_out[-250:]}")
 
@@ -5455,6 +5536,10 @@ def _ssh_pipe_transfer(pve_mgr, task, esxi_host, esxi_user, esxi_pass, datastore
                 task.log(f"  SSH OK: {downloaded/(1024**3):.2f} GB")
             else:
                 task.log(f"  SSH: only {downloaded/(1024**3):.2f} GB (VMDK locked?)")
+                err_tail = (err_s or '').strip()
+                if err_tail:
+                    for line in err_tail.splitlines()[-6:]:
+                        task.log(f"    SSH stderr: {line[:200]}")
 
         # ================================================================
         # METHOD 3: SSHFS dd (FUSE mount)
@@ -5466,7 +5551,9 @@ def _ssh_pipe_transfer(pve_mgr, task, esxi_host, esxi_user, esxi_pass, datastore
                 f"ls -la '{sshfs_src}' 2>&1", timeout=10)
             if rc_chk == 0:
                 dd_log3 = f"/tmp/v2p-{task.id}-dd3-{disk_index}.log"
-                rc_dd, out_dd, _ = _pve_node_exec(pve_mgr, task.target_node,
+                # MK May 2026 (#438 follow-up): capture stderr for the dd-via-SSHFS
+                # path too — same anti-pattern as METHOD 1 + 2 above.
+                rc_dd, out_dd, err_dd = _pve_node_exec(pve_mgr, task.target_node,
                     f"dd if='{sshfs_src}' of='{vol_path}' bs=4M 2>{dd_log3}; "
                     f"cat {dd_log3}; rm -f {dd_log3}", timeout=86400)
                 dd_out = str(out_dd or '').strip()
@@ -5475,6 +5562,11 @@ def _ssh_pipe_transfer(pve_mgr, task, esxi_host, esxi_user, esxi_pass, datastore
                 downloaded = int(bytes_m3.group(1)) if bytes_m3 else 0
                 if downloaded >= flat_size * 0.9:
                     dl_success = True
+                else:
+                    err_tail = (err_dd or '').strip()
+                    if err_tail:
+                        for line in err_tail.splitlines()[-6:]:
+                            task.log(f"    SSHFS stderr: {line[:200]}")
             else:
                 task.log(f"  SSHFS not accessible: {str(out_chk or '')[:100]}")
     finally:
