@@ -245,10 +245,29 @@ def _execute_policy(policy_id):
 
     for node, vmid, vm_type in targets:
         snap = _snap_name(policy['id'])
+        create_ok = False
         try:
             res = mgr.create_snapshot(node, vmid, vm_type, snap, f"PegaProx policy {policy['name']}", policy['include_ram'])
             if res.get('success'):
+                # MK May 2026 (#436 aalandez): create_snapshot returns success as soon
+                # as PVE accepts the request and the task starts — NOT when it
+                # completes. While the create task runs, PVE holds the VM at
+                # `lock = snapshot`. If we issued the retention-delete immediately,
+                # it would hit "VM is locked (snapshot)" and fail. Block on the
+                # task UPID first so the lock has been released before _prune runs.
+                task_upid = res.get('task')
+                if task_upid and hasattr(mgr, '_wait_for_task'):
+                    try:
+                        finished_ok = mgr._wait_for_task(node, task_upid, timeout=600)
+                        if not finished_ok:
+                            log_lines.append(
+                                f"    ⚠ create task for {snap} did not finish OK — "
+                                f"prune may still race the lock; check task log"
+                            )
+                    except Exception as wait_err:
+                        log_lines.append(f"    wait-for-create-task failed (non-fatal): {wait_err}")
                 created += 1
+                create_ok = True
                 log_lines.append(f"  ✓ {vm_type}/{vmid}@{node} → {snap}")
             else:
                 failed += 1
@@ -256,6 +275,11 @@ def _execute_policy(policy_id):
         except Exception as e:
             failed += 1
             log_lines.append(f"  ✗ {vm_type}/{vmid}@{node}: exception: {e}")
+            continue
+        # Only attempt prune when create actually succeeded — otherwise we
+        # might silently prune the wrong policy's snapshots if the VM is
+        # already locked from something else.
+        if not create_ok:
             continue
         try:
             pruned = _prune(mgr, node, vmid, vm_type, policy)
