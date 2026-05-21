@@ -279,6 +279,7 @@ def oidc_exchange_code(config: dict, code: str, code_verifier: str = None) -> di
     LW: Returns access_token, id_token, and optionally refresh_token
     """
     endpoints = get_oidc_endpoints(config)
+    allow_private_ip = bool(config.get('oidc_allow_private_ip', False))
 
     data = {
         'client_id': config['client_id'],
@@ -294,12 +295,21 @@ def oidc_exchange_code(config: dict, code: str, code_verifier: str = None) -> di
     # #188: PKCE code_verifier — required by Authentik, optional for others
     if code_verifier:
         data['code_verifier'] = code_verifier
-    
+
     try:
         try:
-            sanitize_outbound_url(endpoints['token'])
+            # MK May 2026 (#412 follow-up from @robertjakub): thread the
+            # allow_private flag into token sanitize too — discovery was fixed
+            # last release but token + userinfo still tripped the strict guard
+            sanitize_outbound_url(endpoints['token'], allow_private=allow_private_ip)
         except SsrfError as guard_err:
             logging.warning(f"[OIDC] token endpoint rejected by SSRF guard: {guard_err}")
+            if not allow_private_ip and "private" in str(guard_err).lower():
+                logging.warning(
+                    "[OIDC] If your IdP token endpoint sits on a private IP "
+                    "intentionally, enable `oidc_allow_private_ip` in OIDC "
+                    "settings (covers discovery + token + userinfo)."
+                )
             return {'error': 'Token endpoint failed pre-flight URL validation'}
         resp = requests.post(endpoints['token'], data=data, timeout=15)
         if resp.status_code != 200:
@@ -429,8 +439,9 @@ def oidc_get_user_info(config: dict, access_token: str) -> dict:
         
         # Fallback or generic OIDC: use standard userinfo endpoint
         if not user_info and endpoints.get('userinfo'):
+            allow_private_ip = bool(config.get('oidc_allow_private_ip', False))
             try:
-                sanitize_outbound_url(endpoints['userinfo'])
+                sanitize_outbound_url(endpoints['userinfo'], allow_private=allow_private_ip)
             except SsrfError as guard_err:
                 logging.warning(f"[OIDC] userinfo endpoint rejected by SSRF guard: {guard_err}")
                 return {'error': 'Userinfo endpoint failed pre-flight URL validation'}
