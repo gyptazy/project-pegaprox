@@ -367,10 +367,19 @@ class PegaProxManager:
         self._disabled_check_counter = 0  # LW: for checking connection even when disabled
         self._last_reconnect_attempt = 0  # NS: Feb 2026 - throttle reconnection attempts in broadcast loop
         self._consecutive_empty_responses = 0  # NS: Feb 2026 - detect stale tickets (connected but empty data)
-        
+
+        # MK May 2026 (#444) — auth-circuit-breaker. surreal70 reported a DoS where
+        # stale root creds made our workers spam /access/ticket until pveproxy
+        # locked out everything (including the legit Proxmox web UI). Three
+        # consecutive 401s → backoff schedule (60s → 5min → 30min). Reset on
+        # successful login.
+        self._auth_failures = 0
+        self._auth_blocked_until = 0.0   # epoch seconds
+        self._auth_failure_lock = threading.RLock()
+
         # Default timeout for API requests
         self.api_timeout = 10
-        
+
         # Lock for connection operations
         self._connect_lock = threading.Lock()
     
@@ -473,7 +482,46 @@ class PegaProxManager:
     @property
     def ticket(self) -> str:
         return self._ticket
-    
+
+    # MK May 2026 (#444) — circuit breaker. Backoff schedule kicks in after
+    # 3 consecutive 401s so we don't let stale-cred storms spam pveproxy until
+    # its own brute-force-protection locks out the legit Proxmox web UI.
+    def _register_auth_failure(self):
+        with self._auth_failure_lock:
+            self._auth_failures += 1
+            if self._auth_failures >= 10:
+                backoff = 1800   # 30 min — admin clearly hasn't reconfigured
+            elif self._auth_failures >= 5:
+                backoff = 300    # 5 min
+            elif self._auth_failures >= 3:
+                backoff = 60     # 1 min
+            else:
+                return
+            self._auth_blocked_until = time.time() + backoff
+            self.connection_error = (
+                f"Authentication blocked for {backoff}s after {self._auth_failures} "
+                f"consecutive 401s — verify credentials and run Reconfigure"
+            )
+            self.logger.warning(
+                f"[AUTH] cluster '{self.config.name}' blocked for {backoff}s "
+                f"after {self._auth_failures} consecutive auth failures"
+            )
+
+    def _reset_auth_failures(self):
+        with self._auth_failure_lock:
+            if self._auth_failures:
+                self.logger.info(f"[AUTH] cluster '{self.config.name}' auth recovered after {self._auth_failures} failures")
+            self._auth_failures = 0
+            self._auth_blocked_until = 0.0
+
+    def _is_auth_blocked(self):
+        """Check the backoff window. Returns (blocked: bool, remaining_seconds: int)."""
+        with self._auth_failure_lock:
+            now = time.time()
+            if now < self._auth_blocked_until:
+                return True, int(self._auth_blocked_until - now)
+        return False, 0
+
     # LW: All API methods go through these wrappers for consistent error handling
     # MK: Jan 2026 - Fixed timeout handling, was marking cluster offline too eagerly
     # NS May 2026 — instrumented for the API latency dashboard. Cheap (deque, monotonic).
@@ -520,6 +568,12 @@ class PegaProxManager:
             self.connection_error = None
             self._consecutive_failures = 0  # reset failure counter on success
             self._record_api_sample('GET', url, (time.monotonic() - t0) * 1000.0, response.status_code)
+            # MK May 2026 (#444) — PVE rejected the ticket. Invalidate locally so the
+            # next call has to re-login (which the circuit breaker will gate).
+            if response.status_code == 401:
+                self._ticket = None
+                self._csrf_token = None
+                self._register_auth_failure()
             return response
         except requests.exceptions.Timeout as e:
             # MK: Timeout != offline. Proxmox might just be slow (happens a lot with ZFS)
@@ -547,6 +601,10 @@ class PegaProxManager:
             self._consecutive_failures = 0
             self._auto_capture_upid(resp)  # MK May 2026 — bind PVE task to PegaProx user
             self._record_api_sample('POST', url, (time.monotonic() - t0) * 1000.0, resp.status_code)
+            if resp.status_code == 401:
+                self._ticket = None
+                self._csrf_token = None
+                self._register_auth_failure()
             return resp
         except requests.exceptions.Timeout as e:
             # MK: Timeout does NOT mean cluster is offline
@@ -573,6 +631,10 @@ class PegaProxManager:
             self._consecutive_failures = 0
             self._auto_capture_upid(response)
             self._record_api_sample('PUT', url, (time.monotonic() - t0) * 1000.0, response.status_code)
+            if response.status_code == 401:
+                self._ticket = None
+                self._csrf_token = None
+                self._register_auth_failure()
             return response
         except requests.exceptions.Timeout as e:
             # MK: Timeout does NOT mean cluster is offline - operation might have succeeded
@@ -682,6 +744,18 @@ class PegaProxManager:
     def connect_to_proxmox(self) -> bool:
         # connect with fallback
         with self._connect_lock:
+            # MK May 2026 (#444) — bail BEFORE we hit the network if the
+            # circuit breaker has us in a backoff window. Avoids the
+            # stale-cred login storm against pveproxy.
+            blocked, remaining = self._is_auth_blocked()
+            if blocked:
+                self.logger.debug(
+                    f"[AUTH] cluster '{self.config.name}': skipping login attempt, "
+                    f"blocked for another {remaining}s ({self._auth_failures} prior failures)"
+                )
+                self.is_connected = False
+                return False
+
             # NS: clear stale IPs/disk so reconnect doesn't serve old data
             with self._ip_cache_lock:
                 self._ip_cache.clear()
@@ -709,6 +783,10 @@ class PegaProxManager:
                 self._using_api_token = True
                 self._api_token = f"{self.config.api_token_user}={self.config.api_token_secret}"
 
+            # MK May 2026 (#444) — track 401 across the host loop. If primary
+            # returned 401 the fallbacks will too (same creds), no point hitting
+            # each node and inflating pveproxy's failed-login counter.
+            auth_failed_401 = False
             for host in hosts_to_try:
                 try:
                     # Create a temporary session just for login
@@ -755,6 +833,7 @@ class PegaProxManager:
                             self.session = True
 
                             self.logger.info(f"Connected to Proxmox at {host} using API Token")
+                            self._reset_auth_failures()  # MK (#444)
 
                             if not self.config.fallback_hosts:
                                 self._auto_discover_fallback_hosts()
@@ -820,10 +899,16 @@ class PegaProxManager:
                             if not self.config.api_token_user:
                                 self._try_create_api_token(session, host)
 
+                            self._reset_auth_failures()  # MK (#444)
                             return True
                         elif resp.status_code == 401:
-                            self.logger.warning(f"Auth failed at {host} (401)")
+                            # MK May 2026 (#444) — stale creds. Don't try fallbacks
+                            # (same user/pass → same outcome, just more failed
+                            # logins for pveproxy to count against us). Mark + bail.
+                            self.logger.warning(f"Auth failed at {host} (401) — skipping remaining hosts")
                             self.connection_error = "Authentication failed — if 2FA is enabled, use an API token (user@realm!tokenid)"
+                            auth_failed_401 = True
+                            break
                         else:
                             self.logger.warning(f"Failed to login to Proxmox at {host}: {resp.status_code}")
                             # self.logger.debug(f"Response body: {resp.text}")  # too verbose
@@ -846,7 +931,13 @@ class PegaProxManager:
                     self.is_connected = False
                     self.connection_error = str(e)
             
-            self.logger.error(f"Failed to connect to any Proxmox host (tried {len(hosts_to_try)} hosts)")
+            # MK May 2026 (#444) — if the loop exited because of a 401 (not a
+            # network failure), count it against the auth circuit breaker.
+            # Network errors don't get counted — they're not credentials-related.
+            if auth_failed_401:
+                self._register_auth_failure()
+            else:
+                self.logger.error(f"Failed to connect to any Proxmox host (tried {len(hosts_to_try)} hosts)")
             self.is_connected = False
             return False
     
@@ -14321,10 +14412,17 @@ echo DONE""",
         """Stop the PegaProx daemon"""
         if not self.running:
             return
-        
+
         # Stop HA monitor
         self.stop_ha_monitor()
-        
+
+        # MK May 2026 (#444) — when this manager is being swapped out (e.g. via
+        # reconfigure), block any straggler in-flight task from triggering a
+        # re-login on the way out. Whatever creds we hold are about to be
+        # replaced; we don't want orphan workers spamming pveproxy.
+        with self._auth_failure_lock:
+            self._auth_blocked_until = float('inf')
+
         self.stop_event.set()
         if self.thread:
             self.thread.join(timeout=5)
