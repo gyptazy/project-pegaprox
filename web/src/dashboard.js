@@ -17035,9 +17035,9 @@
                                                                 <button
                                                                     onClick={async () => {
                                                                         if (!confirm(t('confirmRotateToken') ||
-                                                                            'Rotate the API token for this cluster?\n\n' +
-                                                                            'PVE 9.2: secret is regenerated in-place, ACLs preserved.\n' +
-                                                                            'PVE 8.x / 9.0 / 9.1: token is deleted + recreated — any ACL entries on the token will be lost.')) return;
+                                                                            ('Rotate the API token for this cluster?\n\n' +
+                                                                             'PVE 9.2: secret is regenerated in-place, ACLs preserved.\n' +
+                                                                             'PVE 8.x / 9.0 / 9.1: token is deleted + recreated — any ACL entries on the token will be lost.'))) return;
                                                                         try {
                                                                             const r = await authFetch(`${API_URL}/clusters/${selectedCluster.id}/api-token/rotate`, {method: 'POST'});
                                                                             const d = await r.json();
