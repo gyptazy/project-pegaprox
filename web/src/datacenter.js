@@ -1329,12 +1329,15 @@
                             </select>
                         </div>
                         <div>
-                            <label className="block text-sm text-gray-400 mb-1">CRS Scheduling Mode</label>
+                            <label className="block text-sm text-gray-400 mb-1">
+                                CRS Scheduling Mode <span className="text-[10px] text-gray-500">PVE &lt; 9.2 only</span>
+                            </label>
                             <select value={editingOptions.crs_mode || ''} onChange={e => setEditingOptions({...editingOptions, crs_mode: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
-                                <option value="">Default (basic) - pre-9.2 only</option>
+                                <option value="">— (not set)</option>
                                 <option value="basic">Basic - simple load distribution</option>
                                 <option value="static">Static - consider static resource config</option>
                             </select>
+                            <p className="text-[11px] text-gray-500 mt-1">Removed from schema in PVE 9.2 — backend silently drops the field on 9.2+ clusters so the rest of the form still saves.</p>
                         </div>
                     </div>
                     {/* MK May 2026 — PVE 9.2+ auto-rebalance tuning. Source:

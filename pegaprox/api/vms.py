@@ -462,14 +462,39 @@ def set_datacenter_options(cluster_id):
         raw_data = request.json or {}
         data = {k: v for k, v in raw_data.items() if k in ALLOWED_DC_OPTIONS}
 
-        # MK May 2026 — earlier I had a strip-filter here for the supposed PVE
-        # 9.2 `imbalance-threshold` / `min-improvement` crs sub-options. Real
-        # 9.2.2 behaviour disproved it: the entire `crs` key was removed from
-        # /cluster/options on 9.2 (schema rejects even `scheduling=basic`
-        # with "property is not defined in schema"). CRS configuration moved
-        # into /cluster/ha/rules. Removed the strip; the legacy crs UI is
-        # only relevant on pre-9.2 clusters and PVE itself will reject it on
-        # 9.2 with a clear schema error.
+        # MK May 2026 — version-gate the crs sub-keys. Live-probed PVE 9.2.2:
+        #   scheduling=basic  → 400 "property is not defined in schema"
+        #   ha-rebalance-on-start=1 → 200 OK
+        #   ha-auto-rebalance=1     → 200 OK
+        #   ha-auto-rebalance-{threshold,method,margin,hold-duration} → 200 OK
+        # Any one rejected sub-key tanks the whole crs PUT — so a UI that
+        # picks "Basic" in the Scheduling Mode dropdown blocked every other
+        # CRS field too. Strip `scheduling=` on 9.2+ so admins can still
+        # save the auto-rebalance settings.
+        # (Pre-9.2 keeps scheduling — it's still in the schema there.)
+        if 'crs' in data and isinstance(data['crs'], str) and data['crs']:
+            pve_ver = manager.get_pve_version_tuple()
+            if pve_ver is not None and pve_ver >= (9, 2):
+                kept = []
+                dropped = []
+                for part in data['crs'].split(','):
+                    key = part.split('=', 1)[0].strip()
+                    if key == 'scheduling':
+                        dropped.append(part)
+                        continue
+                    kept.append(part)
+                if dropped:
+                    data['crs'] = ','.join(kept)
+                    if not data['crs']:
+                        data.pop('crs', None)
+                    try:
+                        from pegaprox.utils.audit import log_audit
+                        log_audit(request.session.get('user', 'system'),
+                                  'datacenter.crs.stripped',
+                                  f"PVE {pve_ver[0]}.{pve_ver[1]} — dropped {dropped}",
+                                  cluster=manager.config.name)
+                    except Exception:
+                        pass
 
         # MK May 2026 — /cluster/options PUT can legitimately take 15-25s on
         # busy clusters (PVE writes datacenter.cfg, ipcc-syncs to all nodes,
