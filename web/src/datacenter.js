@@ -377,10 +377,16 @@
                 // crs object is structured but `scheduling` is no longer in the
                 // schema. We read whatever's there and let the user re-save.
                 if (opts.crs) {
+                    // MK May 2026 — PVE returns toggle values as integer 1 from
+                    // /cluster/options (object form) but as string '1' from the
+                    // composite-string form. Use truthy-check so we don't miss
+                    // the int case. Earlier strict v === '1' check matched only
+                    // the string variant and left the checkbox empty after
+                    // reload, which made saves look like they had no effect.
                     const readPair = (k, v) => {
-                        if (k === 'ha-rebalance-on-start') parsed.crs_ha_rebalance = v === '1' ? '1' : '';
+                        if (k === 'ha-rebalance-on-start') parsed.crs_ha_rebalance = v ? '1' : '';
                         else if (k === 'scheduling') parsed.crs_mode = v || '';
-                        else if (k === 'ha-auto-rebalance') parsed.crs_ha_auto_rebalance = v === '1' ? '1' : '';
+                        else if (k === 'ha-auto-rebalance') parsed.crs_ha_auto_rebalance = v ? '1' : '';
                         else if (k === 'ha-auto-rebalance-threshold') parsed.crs_ha_auto_rebalance_threshold = String(v || '');
                         else if (k === 'ha-auto-rebalance-method') parsed.crs_ha_auto_rebalance_method = String(v || '');
                         else if (k === 'ha-auto-rebalance-hold-duration') parsed.crs_ha_auto_rebalance_hold_duration = String(v || '');
