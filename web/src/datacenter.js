@@ -1306,6 +1306,85 @@
                 );
             }
 
+            // LW May 2026 — CRS settings block, rendered in both
+            // Datacenter → Options AND Datacenter → Proxmox Native HA.
+            // Shares editingOptions / setEditingOptions state so edits in
+            // either panel show up in the other immediately; saveOptions
+            // remains the single submit path.
+            const crsBlock = (
+                <div className="border-t border-proxmox-border pt-4">
+                    <h4 className="text-sm font-medium text-gray-300 mb-3">Cluster Resource Scheduling (CRS)</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-sm text-gray-400 mb-1">HA Rebalance on Start</label>
+                            <select value={editingOptions.crs_ha_rebalance || ''} onChange={e => setEditingOptions({...editingOptions, crs_ha_rebalance: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
+                                <option value="">Disabled</option>
+                                <option value="1">Enabled - auto-rebalance HA resources on node start</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm text-gray-400 mb-1">CRS Scheduling Mode</label>
+                            <select value={editingOptions.crs_mode || ''} onChange={e => setEditingOptions({...editingOptions, crs_mode: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
+                                <option value="">Default (basic) - pre-9.2 only</option>
+                                <option value="basic">Basic - simple load distribution</option>
+                                <option value="static">Static - consider static resource config</option>
+                            </select>
+                        </div>
+                    </div>
+                    {/* MK May 2026 — PVE 9.2+ auto-rebalance tuning. Source:
+                        pve-ha-manager Manager.pm update_crs_scheduler_mode reads
+                        $dc_cfg->{crs}->{ha-auto-rebalance,
+                        ha-auto-rebalance-{threshold,method,hold-duration,margin}}.
+                        Older PVE will reject these on save with a schema error if
+                        set — leave empty on pre-9.2 clusters. */}
+                    <div className="mt-4 pt-3 border-t border-proxmox-border/50">
+                        <p className="text-xs text-gray-500 mb-2">
+                            Auto-Rebalance tuning <span className="text-[10px] text-orange-400">PVE 9.2+</span>
+                        </p>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">Auto-Rebalance</label>
+                                <select value={editingOptions.crs_ha_auto_rebalance || ''} onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
+                                    <option value="">Disabled (PVE default)</option>
+                                    <option value="1">Enabled — CRS rebalances HA resources continuously</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">Method</label>
+                                <select value={editingOptions.crs_ha_auto_rebalance_method || ''} onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_method: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
+                                    <option value="">Default (bruteforce)</option>
+                                    <option value="bruteforce">bruteforce</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">Threshold (%)</label>
+                                <input type="number" min="0" max="100" placeholder="default 30"
+                                    value={editingOptions.crs_ha_auto_rebalance_threshold || ''}
+                                    onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_threshold: e.target.value})}
+                                    className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm" />
+                                <p className="text-[11px] text-gray-500 mt-1">Imbalance threshold before CRS acts. Lower = more aggressive.</p>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">Margin (%)</label>
+                                <input type="number" min="0" max="100" placeholder="default 10"
+                                    value={editingOptions.crs_ha_auto_rebalance_margin || ''}
+                                    onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_margin: e.target.value})}
+                                    className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm" />
+                                <p className="text-[11px] text-gray-500 mt-1">Required improvement margin to justify a move.</p>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">Hold Duration (cycles)</label>
+                                <input type="number" min="0" placeholder="default 3"
+                                    value={editingOptions.crs_ha_auto_rebalance_hold_duration || ''}
+                                    onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_hold_duration: e.target.value})}
+                                    className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm" />
+                                <p className="text-[11px] text-gray-500 mt-1">CRM cycles a VM stays pinned after being placed.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+
             return (
                 <div className={`flex ${isCorporate ? 'gap-0' : 'gap-6'}`}>
                     {/* Sidebar */}
@@ -1647,78 +1726,7 @@
                                             </div>
                                         </div>
                                         
-                                        {/* Cluster Resource Scheduling */}
-                                        <div className="border-t border-proxmox-border pt-4">
-                                            <h4 className="text-sm font-medium text-gray-300 mb-3">Cluster Resource Scheduling (CRS)</h4>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div>
-                                                    <label className="block text-sm text-gray-400 mb-1">HA Rebalance on Start</label>
-                                                    <select value={editingOptions.crs_ha_rebalance || ''} onChange={e => setEditingOptions({...editingOptions, crs_ha_rebalance: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
-                                                        <option value="">Disabled</option>
-                                                        <option value="1">Enabled - auto-rebalance HA resources on node start</option>
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <label className="block text-sm text-gray-400 mb-1">CRS Scheduling Mode</label>
-                                                    <select value={editingOptions.crs_mode || ''} onChange={e => setEditingOptions({...editingOptions, crs_mode: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
-                                                        <option value="">Default (basic) - pre-9.2 only</option>
-                                                        <option value="basic">Basic - simple load distribution</option>
-                                                        <option value="static">Static - consider static resource config</option>
-                                                    </select>
-                                                </div>
-                                            </div>
-                                            {/* MK May 2026 — PVE 9.2+ auto-rebalance tuning. Source:
-                                                pve-ha-manager Manager.pm update_crs_scheduler_mode reads
-                                                $dc_cfg->{crs}->{ha-auto-rebalance,
-                                                ha-auto-rebalance-{threshold,method,hold-duration,margin}}.
-                                                Older PVE will reject these on save with a schema error if
-                                                set — leave empty on pre-9.2 clusters. */}
-                                            <div className="mt-4 pt-3 border-t border-proxmox-border/50">
-                                                <p className="text-xs text-gray-500 mb-2">
-                                                    Auto-Rebalance tuning <span className="text-[10px] text-orange-400">PVE 9.2+</span>
-                                                </p>
-                                                <div className="grid grid-cols-2 gap-4">
-                                                    <div>
-                                                        <label className="block text-sm text-gray-400 mb-1">Auto-Rebalance</label>
-                                                        <select value={editingOptions.crs_ha_auto_rebalance || ''} onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
-                                                            <option value="">Disabled (PVE default)</option>
-                                                            <option value="1">Enabled — CRS rebalances HA resources continuously</option>
-                                                        </select>
-                                                    </div>
-                                                    <div>
-                                                        <label className="block text-sm text-gray-400 mb-1">Method</label>
-                                                        <select value={editingOptions.crs_ha_auto_rebalance_method || ''} onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_method: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
-                                                            <option value="">Default (bruteforce)</option>
-                                                            <option value="bruteforce">bruteforce</option>
-                                                        </select>
-                                                    </div>
-                                                    <div>
-                                                        <label className="block text-sm text-gray-400 mb-1">Threshold (%)</label>
-                                                        <input type="number" min="0" max="100" placeholder="default 30"
-                                                            value={editingOptions.crs_ha_auto_rebalance_threshold || ''}
-                                                            onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_threshold: e.target.value})}
-                                                            className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm" />
-                                                        <p className="text-[11px] text-gray-500 mt-1">Imbalance threshold before CRS acts. Lower = more aggressive.</p>
-                                                    </div>
-                                                    <div>
-                                                        <label className="block text-sm text-gray-400 mb-1">Margin (%)</label>
-                                                        <input type="number" min="0" max="100" placeholder="default 10"
-                                                            value={editingOptions.crs_ha_auto_rebalance_margin || ''}
-                                                            onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_margin: e.target.value})}
-                                                            className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm" />
-                                                        <p className="text-[11px] text-gray-500 mt-1">Required improvement margin to justify a move.</p>
-                                                    </div>
-                                                    <div>
-                                                        <label className="block text-sm text-gray-400 mb-1">Hold Duration (cycles)</label>
-                                                        <input type="number" min="0" placeholder="default 3"
-                                                            value={editingOptions.crs_ha_auto_rebalance_hold_duration || ''}
-                                                            onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_hold_duration: e.target.value})}
-                                                            className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm" />
-                                                        <p className="text-[11px] text-gray-500 mt-1">CRM cycles a VM stays pinned after being placed.</p>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
+                                        {crsBlock /* LW May 2026 — shared with 'ha' section */}
 
                                         {/* VMID Range */}
                                         <div className="border-t border-proxmox-border pt-4">
@@ -5481,6 +5489,31 @@
                         {/* HA - High Availability (Proxmox Native HA) */}
                         {activeSection === 'ha' && (
                             <div className="space-y-6">
+                                {/* LW May 2026 — mirror the CRS / Auto-Rebalance settings card here
+                                    so admins managing HA find it without bouncing back to Options.
+                                    Same editingOptions state as the Options panel — edits in either
+                                    place are visible in both; saveOptions is the single submit path. */}
+                                <div className="bg-proxmox-card border border-proxmox-border rounded-xl p-4">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h3 className="font-semibold flex items-center gap-2">
+                                            <Icons.Sliders className="w-4 h-4" />
+                                            CRS &amp; Auto-Rebalance
+                                            <span className="text-[11px] text-gray-500 font-normal">(same config as Datacenter → Options)</span>
+                                        </h3>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => setEditingOptions(parseOptionsForEdit(dcOptions))}
+                                                className="px-3 py-1.5 bg-proxmox-dark hover:bg-proxmox-border border border-proxmox-border rounded text-xs">
+                                                Revert
+                                            </button>
+                                            <button onClick={saveOptions}
+                                                className="px-3 py-1.5 bg-proxmox-orange hover:bg-orange-600 rounded text-xs text-white">
+                                                Save
+                                            </button>
+                                        </div>
+                                    </div>
+                                    {crsBlock}
+                                </div>
+
                                 {/* HA Status */}
                                 <div className="bg-proxmox-card border border-proxmox-border rounded-xl overflow-hidden">
                                     <div className="p-4 border-b border-proxmox-border flex justify-between items-center">
