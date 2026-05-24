@@ -220,6 +220,78 @@ def export_cluster_config(cluster_id):
     })
 
 
+# MK May 2026 (PVE 9.2) — rotate the auto-created API token without dropping
+# its ACL entries. The classic delete+recreate path resets all permissions;
+# the new /access/users/{user}/token/{id} POST in 9.2 regenerates the secret
+# in place. On pre-9.2 we fall back to delete+create + warn that ACLs reset.
+@bp.route('/api/clusters/<cluster_id>/api-token/rotate', methods=['POST'])
+@require_auth(roles=[ROLE_ADMIN])
+def rotate_cluster_api_token(cluster_id):
+    if cluster_id not in cluster_managers:
+        return jsonify({'error': 'Cluster not found'}), 404
+    mgr = cluster_managers[cluster_id]
+    if not getattr(mgr.config, 'api_token_user', ''):
+        return jsonify({'error': 'No API token configured for this cluster'}), 400
+
+    try:
+        token_user = mgr.config.api_token_user
+        user_part, token_id = token_user.split('!', 1)
+        base = f"https://{mgr.host}:{mgr.api_port}/api2/json/access/users/{user_part}/token/{token_id}"
+
+        pve_ver = mgr.get_pve_version_tuple()
+        new_secret = None
+        # NS May 2026 — only try the 9.2 in-place regenerate when we KNOW the
+        # cluster is 9.2+. Pre-9.2 PVE doesn't reject POST on an existing
+        # token cleanly — it hangs / times out on some 9.1 builds. Falling
+        # back is cheaper than waiting for a 10s read timeout per attempt.
+        if pve_ver is not None and pve_ver >= (9, 2):
+            try:
+                resp = mgr._api_post(base, data={}, timeout=8)
+                if resp.status_code == 200:
+                    data = resp.json().get('data') or {}
+                    new_secret = data.get('value') or data.get('secret')
+                    preserved = True
+                elif resp.status_code in (404, 405, 501):
+                    preserved = False  # fall through to delete+create
+                else:
+                    return jsonify({'error': parse_pve_error(resp.text)}), resp.status_code
+            except Exception as probe_err:
+                mgr.logger.warning(f"[token-rotate] in-place regenerate probe failed ({probe_err}); falling back")
+                preserved = False
+        else:
+            preserved = False
+
+        if new_secret is None:
+            # Legacy path: delete + recreate. Warn caller ACLs are lost.
+            mgr._create_session().delete(base, timeout=10)
+            create_resp = mgr._api_post(base, data={})
+            if create_resp.status_code != 200:
+                return jsonify({'error': parse_pve_error(create_resp.text)}), create_resp.status_code
+            data = create_resp.json().get('data') or {}
+            new_secret = data.get('value') or data.get('secret')
+            preserved = False
+
+        if not new_secret:
+            return jsonify({'error': 'Token regenerated but PVE did not return a secret'}), 502
+
+        # Persist the new secret in our DB so subsequent connects use it
+        mgr.config.api_token_secret = new_secret
+        save_config()
+
+        user = getattr(request, 'session', {}).get('user', 'system')
+        log_audit(user, 'cluster.api_token_rotated',
+                  f"Rotated API token {token_user} (ACLs preserved={preserved})",
+                  cluster=mgr.config.name)
+        return jsonify({
+            'success': True,
+            'acls_preserved': preserved,
+            'message': 'Token rotated; ACLs preserved' if preserved
+                       else 'Token rotated via delete+recreate; ACL entries on this token were lost (pre-PVE-9.2 cluster)',
+        })
+    except Exception as e:
+        return jsonify({'error': safe_error(e, 'Token rotation failed')}), 500
+
+
 @bp.route('/api/clusters/<cluster_id>/reconfigure', methods=['POST'])
 @require_auth(roles=[ROLE_ADMIN])
 def reconfigure_cluster(cluster_id):
@@ -2046,12 +2118,18 @@ def add_to_proxmox_ha(cluster_id):
     max_relocate = data.get('max_relocate', 1)
     state = data.get('state', 'started')
     comment = data.get('comment', '')
-    
+    # MK May 2026 (PVE 9.2) — per-resource auto-rebalance opt-out. None means
+    # caller didn't specify, leave PVE defaults alone; True/False = explicit.
+    auto_rebalance = data.get('auto_rebalance')
+    if auto_rebalance is not None:
+        auto_rebalance = bool(auto_rebalance)
+
     if not vmid:
         logging.warning(f"[HA] Add resource failed: no vmid/sid in request data: {data}")
         return jsonify({'error': 'vmid or sid required (format: vm:100 or ct:101)'}), 400
-    
-    result = mgr.add_vm_to_proxmox_ha(vmid, vm_type, group, max_restart, max_relocate, state, comment)
+
+    result = mgr.add_vm_to_proxmox_ha(vmid, vm_type, group, max_restart, max_relocate, state, comment,
+                                       auto_rebalance=auto_rebalance)
     
     if result['success']:
         usr = getattr(request, 'session', {}).get('user', 'system')

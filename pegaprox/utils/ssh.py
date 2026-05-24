@@ -72,7 +72,8 @@ task_pegaprox_users_cache = {}  # In-memory cache for fast lookups
 task_pegaprox_users_lock = threading.Lock()
 TASK_USER_CACHE_TTL = 86400  # Keep for 24 hours (in DB, will be cleaned on startup)
 
-def _ssh_exec(host, user, password, cmd, timeout=30, use_controlmaster=False):
+def _ssh_exec(host, user, password, cmd, timeout=30, use_controlmaster=False,
+              connect_timeout=8):
     """Execute command on remote host via SSH.
     Handles ESXi which only allows 'keyboard-interactive' and 'publickey'.
 
@@ -89,9 +90,26 @@ def _ssh_exec(host, user, password, cmd, timeout=30, use_controlmaster=False):
       (no /run write, OpenSSH < 5.6, etc.), falls back to fresh connections
       with no error. HA paths in core/manager.py do NOT use this — they
       have their own subprocess+paramiko paths and are intentionally untouched.
+
+    MK May 2026 (dead-node UI hang fix) — split `timeout` into two phases:
+    `connect_timeout` (TCP+auth handshake, default 8s — fail fast on dead
+    hosts so the UI doesn't hang) and `timeout` (command execution, default
+    30s — keeps headroom for long-running ops). paramiko.Transport doesn't
+    accept a timeout arg directly, so we pre-create a socket with the
+    connect timeout and hand it to Transport. Without this, Transport
+    blocks on the kernel TCP default (~75s on Linux without SYN-ACK).
     """
+    import socket as _socket
     last_err = ''
     errors = []
+
+    def _make_sock():
+        """Pre-create socket with explicit connect_timeout — paramiko.Transport
+        won't fail-fast on dead hosts otherwise.  IPv4 + IPv6 aware."""
+        try:
+            return _socket.create_connection((host, 22), timeout=connect_timeout)
+        except Exception:
+            return None
     
     def _configure_transport_algorithms(t):
         """Add ESXi-compatible legacy algorithms to paramiko Transport."""
@@ -154,7 +172,10 @@ def _ssh_exec(host, user, password, cmd, timeout=30, use_controlmaster=False):
         
         # Method 1: keyboard-interactive via Transport (what ESXi wants)
         try:
-            transport = paramiko.Transport((host, 22))
+            _sock = _make_sock()
+            if _sock is None:
+                raise Exception(f'TCP connect to {host}:22 timed out after {connect_timeout}s')
+            transport = paramiko.Transport(_sock)
             _configure_transport_algorithms(transport)
             transport.connect()
             
@@ -185,7 +206,10 @@ def _ssh_exec(host, user, password, cmd, timeout=30, use_controlmaster=False):
                     pass
                 client2.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                 
-                transport2 = paramiko.Transport((host, 22))
+                _sock2 = _make_sock()
+                if _sock2 is None:
+                    raise Exception(f'TCP connect to {host}:22 timed out after {connect_timeout}s')
+                transport2 = paramiko.Transport(_sock2)
                 _configure_transport_algorithms(transport2)
                 transport2.connect()
                 
@@ -220,7 +244,13 @@ def _ssh_exec(host, user, password, cmd, timeout=30, use_controlmaster=False):
                 except Exception:
                     pass
                 client3.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                client3.connect(host, username=user, password=password, timeout=timeout,
+                # NS May 2026 — `timeout` here is paramiko's CONNECT timeout
+                # (TCP+auth), not command-exec. Use the dedicated connect
+                # phase budget so dead hosts fail in 8s rather than 30s.
+                client3.connect(host, username=user, password=password,
+                               timeout=connect_timeout,
+                               banner_timeout=connect_timeout,
+                               auth_timeout=connect_timeout,
                                allow_agent=False, look_for_keys=False)
                 client = client3
                 connected = True
@@ -300,7 +330,20 @@ def _pve_node_exec(pve_mgr, node, cmd, timeout=600, use_controlmaster=True):
     300s reuse the master connection (skips TCP+crypto+auth handshake).
     Pass use_controlmaster=False for one-shot calls where you don't want a
     persistent socket (rare). HA-critical SSH in core/manager.py does NOT
-    go through this function."""
+    go through this function.
+
+    MK May 2026 (dead-node UI hang) — short-circuit if the per-node circuit
+    breaker says this node is unreachable; register failure on SSH errors so
+    repeated calls don't burn a full timeout every time."""
+    # MK — fail-fast if the breaker is open
+    try:
+        blocked, remaining = pve_mgr._is_node_blocked(node)
+        if blocked:
+            return 1, '', f"node '{node}' in circuit-breaker backoff ({remaining}s remaining)"
+    except Exception:
+        # Older managers without the breaker — proceed as before
+        pass
+
     # Method 1: Try Proxmox API exec (PVE 7.4+)
     try:
         resp = pve_mgr._api_post(
@@ -308,21 +351,25 @@ def _pve_node_exec(pve_mgr, node, cmd, timeout=600, use_controlmaster=True):
             data={'commands': cmd}
         )
         if resp.status_code == 200:
+            try:
+                pve_mgr._reset_node_failures(node)
+            except Exception:
+                pass
             return 0, resp.json().get('data', ''), ''
     except Exception:
         pass
-    
+
     # Method 2: SSH directly to the node
     # Resolve node IP: check cache, then API, then hostname, then cluster host
     node_host = None
     cache_key = (pve_mgr.id, node)
-    
+
     # Check cache first (5 min TTL)
     if cache_key in _node_ip_cache:
         cached_ip, cached_time = _node_ip_cache[cache_key]
         if time.time() - cached_time < 300:
             node_host = cached_ip
-    
+
     if not node_host:
         # NS: use manager's _get_node_ip which does proper interface scoring
         # (same mgmt interface, same VLAN, same subnet, reachability probe)
@@ -334,16 +381,44 @@ def _pve_node_exec(pve_mgr, node, cmd, timeout=600, use_controlmaster=True):
             pass
 
     if not node_host:
-        node_host = pve_mgr.host
-    
+        # MK May 2026 — DO NOT silently fall back to pve_mgr.host when the
+        # target node is unreachable. Previously this routed node-targeted
+        # commands to the cluster.host node, which is wrong for anything
+        # node-specific (running ps, reading /etc/pve/local, etc.). If
+        # _get_node_ip returns None, register the failure and bail.
+        try:
+            pve_mgr._register_node_failure(node)
+        except Exception:
+            pass
+        return 1, '', f"cannot resolve reachable IP for node '{node}'"
+
     # Cache the resolved IP
     _node_ip_cache[cache_key] = (node_host, time.time())
-    
+
     try:
         rc, out, err = _ssh_exec(node_host, 'root', pve_mgr.config.pass_, cmd,
                                   timeout=timeout, use_controlmaster=use_controlmaster)
+        # SSH error patterns that indicate the node itself is dead, not the cmd
+        looks_like_node_down = (
+            rc != 0 and any(s in str(err).lower() for s in (
+                'tcp connect', 'connection refused', 'connection timed out',
+                'no route to host', 'host is down', 'auth failed',
+                'paramiko exec failed', 'all ssh methods failed',
+            ))
+        )
+        try:
+            if looks_like_node_down:
+                pve_mgr._register_node_failure(node)
+            elif rc == 0:
+                pve_mgr._reset_node_failures(node)
+        except Exception:
+            pass
         return rc, out, err
     except Exception as e:
+        try:
+            pve_mgr._register_node_failure(node)
+        except Exception:
+            pass
         return 1, '', str(e)
 
 

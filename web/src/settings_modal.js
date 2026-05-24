@@ -649,6 +649,7 @@
                 oidc_skip_jwt_verification: false,
                 oidc_skip_ssl_verify: false,
                 oidc_allow_private_ip: false,   // MK May 2026 (#412)
+                oidc_audiences: '',             // NS May 2026 (PVE 9.2 parity)
             });
             const [oidcTesting, setOidcTesting] = useState(false);
             const [oidcTestResult, setOidcTestResult] = useState(null);
@@ -1597,6 +1598,7 @@
                             oidc_skip_jwt_verification: data.oidc_skip_jwt_verification || false,
                             oidc_skip_ssl_verify: data.oidc_skip_ssl_verify || false,
                             oidc_allow_private_ip: data.oidc_allow_private_ip || false,
+                            oidc_audiences: data.oidc_audiences || '',
                             oidc_group_mappings: data.oidc_group_mappings || [],
                         }));
                     }
@@ -5238,6 +5240,22 @@
                                         )}
                                         <p className="text-[11px] text-gray-500 leading-snug">
                                             {t('oidcPrivateIpHint') || 'Affects: the /.well-known/openid-configuration discovery call only. Other outbound paths (webhooks, plugin upstreams, SAML metadata) keep the strict guard.'}
+                                        </p>
+                                    </div>
+
+                                    {/* NS May 2026 (PVE 9.2 parity) — extra audiences accepted on JWT verify */}
+                                    <div className="bg-proxmox-dark border border-proxmox-border rounded-xl p-4 space-y-2">
+                                        <h4 className="text-white font-medium flex items-center gap-2">
+                                            <Icons.Key />
+                                            {t('oidcAudiences') || 'Accepted Audiences'}
+                                        </h4>
+                                        <input type="text"
+                                            value={oidcConfig.oidc_audiences || ''}
+                                            onChange={e => setOidcConfig(prev => ({...prev, oidc_audiences: e.target.value}))}
+                                            placeholder="comma-separated, e.g. pegaprox-prod, pegaprox-staging"
+                                            className="w-full bg-proxmox-darker border border-proxmox-border rounded p-2 text-sm font-mono text-white" />
+                                        <p className="text-[11px] text-gray-500 leading-snug">
+                                            {t('oidcAudiencesHint') || 'Additional audience values accepted on the JWT verify alongside the client_id. Useful when one logical audience is shared across multiple deployments.'}
                                         </p>
                                     </div>
 

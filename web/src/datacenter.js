@@ -60,7 +60,7 @@
             const [showAddHaGroup, setShowAddHaGroup] = useState(false);
             const [showEditHaResource, setShowEditHaResource] = useState(null);
             const [showEditHaGroup, setShowEditHaGroup] = useState(null);
-            const [newHaResource, setNewHaResource] = useState({ sid: '', state: 'started', group: '', max_restart: 1, max_relocate: 1, comment: '' });
+            const [newHaResource, setNewHaResource] = useState({ sid: '', state: 'started', group: '', max_restart: 1, max_relocate: 1, comment: '', auto_rebalance: null });
             const [newHaGroup, setNewHaGroup] = useState({ group: '', nodes: '', restricted: 0, nofailback: 0 });
             
             const [metricServers, setMetricServers] = useState([]);
@@ -90,6 +90,16 @@
             
             // LW: SDN State - Feb 2026, GitHub Issue #38
             const [sdnData, setSdnData] = useState({ available: false, zones: [], vnets: [], subnets: [], controllers: [], ipams: [], dns: [], pending: false, debug: {} });
+            // LW May 2026 — PVE 9.2 SDN extras. Three new object families (fabrics,
+            // route-maps, prefix-lists) sit under the same /cluster/sdn path. Lazy-load
+            // when the user opens the SDN tab; pre-9.2 clusters return empty arrays
+            // (backend translates the 404 → []).
+            const [sdn92Fabrics, setSdn92Fabrics] = useState([]);
+            const [sdn92RouteMaps, setSdn92RouteMaps] = useState([]);
+            const [sdn92PrefixLists, setSdn92PrefixLists] = useState([]);
+            const [sdn92Loaded, setSdn92Loaded] = useState(false);
+            const [sdn92AddType, setSdn92AddType] = useState(null);  // null | 'fabric' | 'routemap' | 'prefixlist'
+            const [sdn92Form, setSdn92Form] = useState({ name: '', protocol: 'openfabric', comment: '' });
             const [sdnLoading, setSdnLoading] = useState(false);
             const [showAddZone, setShowAddZone] = useState(false);
             const [showAddVnet, setShowAddVnet] = useState(false);
@@ -297,6 +307,13 @@
                 // CRS (complex)
                 crs_ha_rebalance: '',
                 crs_mode: '',
+                // MK May 2026 — PVE 9.2+ CRS auto-rebalance tuning (pve-ha-manager
+                // Manager.pm update_crs_scheduler_mode). All sub-keys of `crs`.
+                crs_ha_auto_rebalance: '',          // toggle '1' / ''
+                crs_ha_auto_rebalance_threshold: '', // % int (default 30)
+                crs_ha_auto_rebalance_method: '',    // 'bruteforce' default
+                crs_ha_auto_rebalance_hold_duration: '',  // int (default 3)
+                crs_ha_auto_rebalance_margin: '',    // % int (default 10)
                 // Next ID Range (complex)
                 next_id_lower: 100,
                 next_id_upper: 999999999,
@@ -353,16 +370,34 @@
                     }
                 }
                 
-                // CRS: can be object {ha-rebalance-on-start, scheduling} or string
+                // CRS: can be object {ha-rebalance-on-start, scheduling,
+                //   ha-auto-rebalance, ha-auto-rebalance-{threshold,method,hold-duration,margin}}
+                // OR the raw composite string PVE sometimes returns.
+                // Note: the `scheduling` sub-key is pre-9.2 only — on 9.2 the
+                // crs object is structured but `scheduling` is no longer in the
+                // schema. We read whatever's there and let the user re-save.
                 if (opts.crs) {
+                    // MK May 2026 — PVE returns toggle values as integer 1 from
+                    // /cluster/options (object form) but as string '1' from the
+                    // composite-string form. Use truthy-check so we don't miss
+                    // the int case. Earlier strict v === '1' check matched only
+                    // the string variant and left the checkbox empty after
+                    // reload, which made saves look like they had no effect.
+                    const readPair = (k, v) => {
+                        if (k === 'ha-rebalance-on-start') parsed.crs_ha_rebalance = v ? '1' : '';
+                        else if (k === 'scheduling') parsed.crs_mode = v || '';
+                        else if (k === 'ha-auto-rebalance') parsed.crs_ha_auto_rebalance = v ? '1' : '';
+                        else if (k === 'ha-auto-rebalance-threshold') parsed.crs_ha_auto_rebalance_threshold = String(v || '');
+                        else if (k === 'ha-auto-rebalance-method') parsed.crs_ha_auto_rebalance_method = String(v || '');
+                        else if (k === 'ha-auto-rebalance-hold-duration') parsed.crs_ha_auto_rebalance_hold_duration = String(v || '');
+                        else if (k === 'ha-auto-rebalance-margin') parsed.crs_ha_auto_rebalance_margin = String(v || '');
+                    };
                     if (typeof opts.crs === 'object') {
-                        parsed.crs_ha_rebalance = opts.crs['ha-rebalance-on-start'] ? '1' : '';
-                        parsed.crs_mode = opts.crs.scheduling || '';
+                        for (const [k, v] of Object.entries(opts.crs)) readPair(k, v);
                     } else if (typeof opts.crs === 'string') {
                         opts.crs.split(',').forEach(part => {
                             const [k, v] = part.split('=');
-                            if (k === 'ha-rebalance-on-start') parsed.crs_ha_rebalance = v === '1' ? '1' : '';
-                            if (k === 'scheduling') parsed.crs_mode = v;
+                            readPair(k, v);
                         });
                     }
                 }
@@ -723,12 +758,34 @@
                     }
                     
                     // === CRS Settings ===
+                    // Mix of pre-9.2 (scheduling, ha-rebalance-on-start) and
+                    // 9.2+ (ha-auto-rebalance + its tuning sub-keys). Send
+                    // whatever the admin filled; PVE will reject keys it
+                    // doesn't understand for its version.
                     const crsParts = [];
                     if (editingOptions.crs_ha_rebalance === '1') {
                         crsParts.push('ha-rebalance-on-start=1');
                     }
                     if (editingOptions.crs_mode && editingOptions.crs_mode !== '') {
                         crsParts.push(`scheduling=${editingOptions.crs_mode}`);
+                    }
+                    if (editingOptions.crs_ha_auto_rebalance === '1') {
+                        crsParts.push('ha-auto-rebalance=1');
+                    }
+                    const arThresh = parseInt(editingOptions.crs_ha_auto_rebalance_threshold, 10);
+                    if (!isNaN(arThresh) && arThresh >= 0 && arThresh <= 100) {
+                        crsParts.push(`ha-auto-rebalance-threshold=${arThresh}`);
+                    }
+                    if (editingOptions.crs_ha_auto_rebalance_method) {
+                        crsParts.push(`ha-auto-rebalance-method=${editingOptions.crs_ha_auto_rebalance_method}`);
+                    }
+                    const arHold = parseInt(editingOptions.crs_ha_auto_rebalance_hold_duration, 10);
+                    if (!isNaN(arHold) && arHold >= 0) {
+                        crsParts.push(`ha-auto-rebalance-hold-duration=${arHold}`);
+                    }
+                    const arMargin = parseInt(editingOptions.crs_ha_auto_rebalance_margin, 10);
+                    if (!isNaN(arMargin) && arMargin >= 0 && arMargin <= 100) {
+                        crsParts.push(`ha-auto-rebalance-margin=${arMargin}`);
                     }
                     if (crsParts.length > 0) {
                         payload.crs = crsParts.join(',');
@@ -1255,6 +1312,82 @@
                 );
             }
 
+            // LW May 2026 — CRS settings block, rendered in both
+            // Datacenter → Options AND Datacenter → Proxmox Native HA.
+            // Shares editingOptions / setEditingOptions state so edits in
+            // either panel show up in the other immediately; saveOptions
+            // remains the single submit path.
+            const crsBlock = (
+                <div className="border-t border-proxmox-border pt-4">
+                    <h4 className="text-sm font-medium text-gray-300 mb-3">{t('crsHeader') || 'Cluster Resource Scheduling (CRS)'}</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-sm text-gray-400 mb-1">{t('crsHaRebalanceOnStart') || 'HA Rebalance on Start'}</label>
+                            <select value={editingOptions.crs_ha_rebalance || ''} onChange={e => setEditingOptions({...editingOptions, crs_ha_rebalance: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
+                                <option value="">{t('disabled') || 'Disabled'}</option>
+                                <option value="1">{t('crsHaRebalanceOnStartHint') || 'Auto-rebalance HA resources on node start'}</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm text-gray-400 mb-1">
+                                {t('crsSchedulingMode') || 'CRS Scheduling Mode'} <span className="text-[10px] text-gray-500">PVE &lt; 9.2</span>
+                            </label>
+                            <select value={editingOptions.crs_mode || ''} onChange={e => setEditingOptions({...editingOptions, crs_mode: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
+                                <option value="">—</option>
+                                <option value="basic">Basic</option>
+                                <option value="static">Static</option>
+                            </select>
+                            <p className="text-[11px] text-gray-500 mt-1">{t('crsSchedulingModeRemoved') || 'Removed from schema in PVE 9.2 — backend silently drops the field on 9.2+ clusters so the rest of the form still saves.'}</p>
+                        </div>
+                    </div>
+                    <div className="mt-4 pt-3 border-t border-proxmox-border/50">
+                        <p className="text-xs text-gray-500 mb-2">
+                            {t('crsAutoRebalanceTuning') || 'Auto-Rebalance tuning'} <span className="text-[10px] text-orange-400">PVE 9.2+</span>
+                        </p>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">{t('crsAutoRebalance') || 'Auto-Rebalance'}</label>
+                                <select value={editingOptions.crs_ha_auto_rebalance || ''} onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
+                                    <option value="">{t('crsAutoRebalanceOff') || 'Disabled (PVE default)'}</option>
+                                    <option value="1">{t('crsAutoRebalanceOn') || 'Enabled — CRS rebalances HA resources continuously'}</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">{t('crsMethod') || 'Method'}</label>
+                                <select value={editingOptions.crs_ha_auto_rebalance_method || ''} onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_method: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
+                                    <option value="">{(t('default') || 'Default') + ' (bruteforce)'}</option>
+                                    <option value="bruteforce">bruteforce</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">{t('crsThreshold') || 'Threshold (%)'}</label>
+                                <input type="number" min="0" max="100" placeholder="30"
+                                    value={editingOptions.crs_ha_auto_rebalance_threshold || ''}
+                                    onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_threshold: e.target.value})}
+                                    className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm" />
+                                <p className="text-[11px] text-gray-500 mt-1">{t('crsThresholdHint') || 'Imbalance threshold before CRS acts. Lower = more aggressive.'}</p>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">{t('crsMargin') || 'Margin (%)'}</label>
+                                <input type="number" min="0" max="100" placeholder="10"
+                                    value={editingOptions.crs_ha_auto_rebalance_margin || ''}
+                                    onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_margin: e.target.value})}
+                                    className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm" />
+                                <p className="text-[11px] text-gray-500 mt-1">{t('crsMarginHint') || 'Required improvement margin to justify a move.'}</p>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">{t('crsHoldDuration') || 'Hold Duration (cycles)'}</label>
+                                <input type="number" min="0" placeholder="3"
+                                    value={editingOptions.crs_ha_auto_rebalance_hold_duration || ''}
+                                    onChange={e => setEditingOptions({...editingOptions, crs_ha_auto_rebalance_hold_duration: e.target.value})}
+                                    className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm" />
+                                <p className="text-[11px] text-gray-500 mt-1">{t('crsHoldDurationHint') || 'CRM cycles a VM stays pinned after being placed.'}</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+
             return (
                 <div className={`flex ${isCorporate ? 'gap-0' : 'gap-6'}`}>
                     {/* Sidebar */}
@@ -1596,28 +1729,8 @@
                                             </div>
                                         </div>
                                         
-                                        {/* Cluster Resource Scheduling */}
-                                        <div className="border-t border-proxmox-border pt-4">
-                                            <h4 className="text-sm font-medium text-gray-300 mb-3">Cluster Resource Scheduling (CRS)</h4>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div>
-                                                    <label className="block text-sm text-gray-400 mb-1">HA Rebalance on Start</label>
-                                                    <select value={editingOptions.crs_ha_rebalance || ''} onChange={e => setEditingOptions({...editingOptions, crs_ha_rebalance: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
-                                                        <option value="">Disabled</option>
-                                                        <option value="1">Enabled - auto-rebalance HA resources on node start</option>
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <label className="block text-sm text-gray-400 mb-1">CRS Scheduling Mode</label>
-                                                    <select value={editingOptions.crs_mode || ''} onChange={e => setEditingOptions({...editingOptions, crs_mode: e.target.value})} className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
-                                                        <option value="">Default (basic)</option>
-                                                        <option value="basic">Basic - simple load distribution</option>
-                                                        <option value="static">Static - consider static resource config</option>
-                                                    </select>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        
+                                        {crsBlock /* LW May 2026 — shared with 'ha' section */}
+
                                         {/* VMID Range */}
                                         <div className="border-t border-proxmox-border pt-4">
                                             <h4 className="text-sm font-medium text-gray-300 mb-3">Next Free VMID Range</h4>
@@ -4630,6 +4743,209 @@
                                         </div>
                                     </div>
                                 )}
+
+                                {/* LW May 2026 — PVE 9.2 SDN extras: fabrics + route-maps + prefix-lists.
+                                    Lazy-loaded so we don't 404-spam pre-9.2 clusters on every render. */}
+                                {sdnData.available && (
+                                    <div className="bg-proxmox-card border border-proxmox-border rounded-xl p-4 mt-4">
+                                        <div className="flex items-center justify-between mb-3">
+                                            <h3 className="text-sm font-medium text-white flex items-center gap-2">
+                                                <Icons.Layers className="w-4 h-4 text-orange-400" />
+                                                PVE 9.2 SDN extras
+                                                <span className="text-[10px] text-gray-500">(fabrics · route-maps · prefix-lists)</span>
+                                            </h3>
+                                            <button
+                                                onClick={async () => {
+                                                    try {
+                                                        const [fr, rmr, plr] = await Promise.all([
+                                                            authFetch(`${API_URL}/clusters/${clusterId}/datacenter/sdn/fabrics`),
+                                                            authFetch(`${API_URL}/clusters/${clusterId}/datacenter/sdn/routemaps`),
+                                                            authFetch(`${API_URL}/clusters/${clusterId}/datacenter/sdn/prefixlists`),
+                                                        ]);
+                                                        setSdn92Fabrics(fr.ok ? (await fr.json()) || [] : []);
+                                                        setSdn92RouteMaps(rmr.ok ? (await rmr.json()) || [] : []);
+                                                        setSdn92PrefixLists(plr.ok ? (await plr.json()) || [] : []);
+                                                        setSdn92Loaded(true);
+                                                    } catch (e) {
+                                                        addToast('Failed to load PVE 9.2 SDN extras: ' + e, 'error');
+                                                    }
+                                                }}
+                                                className="px-3 py-1.5 bg-proxmox-dark hover:bg-proxmox-border border border-proxmox-border rounded text-xs text-gray-300 hover:text-white flex items-center gap-1.5">
+                                                <Icons.RefreshCw className="w-3 h-3" />
+                                                {sdn92Loaded ? 'Refresh' : 'Load'}
+                                            </button>
+                                        </div>
+
+                                        {!sdn92Loaded ? (
+                                            <p className="text-xs text-gray-500">
+                                                Click Load to fetch fabrics + route-maps + prefix-lists. Pre-PVE-9.2 clusters will show empty lists (endpoints don't exist).
+                                            </p>
+                                        ) : (
+                                            <div className="grid grid-cols-3 gap-3">
+                                                {/* Fabrics */}
+                                                <div className="bg-proxmox-dark/50 rounded-lg p-3 border border-proxmox-border">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <div className="text-xs font-medium text-gray-300">Fabrics <span className="text-gray-500">({sdn92Fabrics.length})</span></div>
+                                                        <button onClick={() => { setSdn92AddType('fabric'); setSdn92Form({ name: '', protocol: 'openfabric', comment: '' }); }}
+                                                            className="text-xs text-orange-400 hover:text-orange-300">+ add</button>
+                                                    </div>
+                                                    {sdn92Fabrics.length === 0 ? (
+                                                        <p className="text-[11px] text-gray-500">none</p>
+                                                    ) : (
+                                                        <ul className="space-y-1">
+                                                            {sdn92Fabrics.map(f => (
+                                                                <li key={f.fabric} className="flex items-center justify-between text-xs">
+                                                                    <span className="font-mono text-gray-300">{f.fabric} <span className="text-gray-500">[{f.protocol}]</span></span>
+                                                                    <button onClick={async () => {
+                                                                        if (!confirm(`Delete fabric '${f.fabric}'?`)) return;
+                                                                        const r = await authFetch(`${API_URL}/clusters/${clusterId}/datacenter/sdn/fabrics/${f.fabric}`, {method:'DELETE'});
+                                                                        if (r.ok) { setSdn92Fabrics(sdn92Fabrics.filter(x => x.fabric !== f.fabric)); addToast('Fabric deleted', 'success'); }
+                                                                        else { addToast('Delete failed: ' + (await r.text()), 'error'); }
+                                                                    }} className="text-red-400 hover:text-red-300">×</button>
+                                                                </li>
+                                                            ))}
+                                                        </ul>
+                                                    )}
+                                                </div>
+                                                {/* Route-Maps */}
+                                                <div className="bg-proxmox-dark/50 rounded-lg p-3 border border-proxmox-border">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <div className="text-xs font-medium text-gray-300">Route-Maps <span className="text-gray-500">({sdn92RouteMaps.length})</span></div>
+                                                        <button onClick={() => { setSdn92AddType('routemap'); setSdn92Form({ name: '', protocol: '', comment: '' }); }}
+                                                            className="text-xs text-orange-400 hover:text-orange-300">+ add</button>
+                                                    </div>
+                                                    {sdn92RouteMaps.length === 0 ? (
+                                                        <p className="text-[11px] text-gray-500">none</p>
+                                                    ) : (
+                                                        <ul className="space-y-1">
+                                                            {sdn92RouteMaps.map(rm => {
+                                                                const key = rm.routemap || rm.name || JSON.stringify(rm).slice(0,16);
+                                                                return (
+                                                                    <li key={key} className="flex items-center justify-between text-xs">
+                                                                        <span className="font-mono text-gray-300">{key}</span>
+                                                                        <button onClick={async () => {
+                                                                            if (!confirm(`Delete route-map '${key}'?`)) return;
+                                                                            const r = await authFetch(`${API_URL}/clusters/${clusterId}/datacenter/sdn/routemaps/${key}`, {method:'DELETE'});
+                                                                            if (r.ok) { setSdn92RouteMaps(sdn92RouteMaps.filter(x => (x.routemap||x.name) !== key)); addToast('Route-map deleted','success'); }
+                                                                            else { addToast('Delete failed: ' + (await r.text()),'error'); }
+                                                                        }} className="text-red-400 hover:text-red-300">×</button>
+                                                                    </li>
+                                                                );
+                                                            })}
+                                                        </ul>
+                                                    )}
+                                                </div>
+                                                {/* Prefix-Lists */}
+                                                <div className="bg-proxmox-dark/50 rounded-lg p-3 border border-proxmox-border">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <div className="text-xs font-medium text-gray-300">Prefix-Lists <span className="text-gray-500">({sdn92PrefixLists.length})</span></div>
+                                                        <button onClick={() => { setSdn92AddType('prefixlist'); setSdn92Form({ name: '', protocol: '', comment: '' }); }}
+                                                            className="text-xs text-orange-400 hover:text-orange-300">+ add</button>
+                                                    </div>
+                                                    {sdn92PrefixLists.length === 0 ? (
+                                                        <p className="text-[11px] text-gray-500">none</p>
+                                                    ) : (
+                                                        <ul className="space-y-1">
+                                                            {sdn92PrefixLists.map(pl => {
+                                                                const key = pl.prefixlist || pl.name || JSON.stringify(pl).slice(0,16);
+                                                                return (
+                                                                    <li key={key} className="flex items-center justify-between text-xs">
+                                                                        <span className="font-mono text-gray-300">{key}</span>
+                                                                        <button onClick={async () => {
+                                                                            if (!confirm(`Delete prefix-list '${key}'?`)) return;
+                                                                            const r = await authFetch(`${API_URL}/clusters/${clusterId}/datacenter/sdn/prefixlists/${key}`, {method:'DELETE'});
+                                                                            if (r.ok) { setSdn92PrefixLists(sdn92PrefixLists.filter(x => (x.prefixlist||x.name) !== key)); addToast('Prefix-list deleted','success'); }
+                                                                            else { addToast('Delete failed: ' + (await r.text()),'error'); }
+                                                                        }} className="text-red-400 hover:text-red-300">×</button>
+                                                                    </li>
+                                                                );
+                                                            })}
+                                                        </ul>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Add modal — minimal shared form for all 3 types */}
+                                        {sdn92AddType && (
+                                            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+                                                <div className="bg-proxmox-card border border-proxmox-border rounded-xl p-5 max-w-md w-full mx-4">
+                                                    <h4 className="text-sm font-medium text-white mb-3">
+                                                        Add {sdn92AddType}
+                                                    </h4>
+                                                    <div className="space-y-3">
+                                                        <div>
+                                                            <label className="block text-xs text-gray-400 mb-1">Name</label>
+                                                            <input type="text" value={sdn92Form.name}
+                                                                onChange={e => setSdn92Form({...sdn92Form, name: e.target.value})}
+                                                                placeholder={sdn92AddType === 'fabric' ? 'fabric1' : (sdn92AddType === 'routemap' ? 'rmap1' : 'plist1')}
+                                                                className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm font-mono" />
+                                                        </div>
+                                                        {sdn92AddType === 'fabric' && (
+                                                            <div>
+                                                                <label className="block text-xs text-gray-400 mb-1">Protocol</label>
+                                                                <select value={sdn92Form.protocol}
+                                                                    onChange={e => setSdn92Form({...sdn92Form, protocol: e.target.value})}
+                                                                    className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm">
+                                                                    <option value="openfabric">openfabric</option>
+                                                                    <option value="ospf">ospf</option>
+                                                                    <option value="wireguard">wireguard (PVE 9.2+)</option>
+                                                                    <option value="bgp">bgp (PVE 9.2+)</option>
+                                                                </select>
+                                                            </div>
+                                                        )}
+                                                        <div>
+                                                            <label className="block text-xs text-gray-400 mb-1">Comment (optional)</label>
+                                                            <input type="text" value={sdn92Form.comment}
+                                                                onChange={e => setSdn92Form({...sdn92Form, comment: e.target.value})}
+                                                                className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm" />
+                                                        </div>
+                                                        <p className="text-[11px] text-gray-500">
+                                                            Per-protocol details (wireguard endpoints, BGP ASN, OSPF area etc.) need to be set via the PVE web UI — PegaProx exposes the basic create here for inventory, you'll finish the config in PVE.
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex justify-end gap-2 mt-4">
+                                                        <button onClick={() => setSdn92AddType(null)}
+                                                            className="px-3 py-1.5 bg-proxmox-dark hover:bg-proxmox-border rounded text-xs">Cancel</button>
+                                                        <button
+                                                            disabled={!sdn92Form.name.trim()}
+                                                            onClick={async () => {
+                                                                const name = sdn92Form.name.trim();
+                                                                if (!name) return;
+                                                                let path, body;
+                                                                if (sdn92AddType === 'fabric') {
+                                                                    path = 'fabrics';
+                                                                    body = { fabric: name, protocol: sdn92Form.protocol };
+                                                                } else if (sdn92AddType === 'routemap') {
+                                                                    path = 'routemaps';
+                                                                    body = { routemap: name };
+                                                                } else {
+                                                                    path = 'prefixlists';
+                                                                    body = { prefixlist: name };
+                                                                }
+                                                                if (sdn92Form.comment) body.comment = sdn92Form.comment;
+                                                                const r = await authFetch(`${API_URL}/clusters/${clusterId}/datacenter/sdn/${path}`, {
+                                                                    method: 'POST',
+                                                                    headers: {'Content-Type': 'application/json'},
+                                                                    body: JSON.stringify(body),
+                                                                });
+                                                                if (r.ok) {
+                                                                    addToast('Created — reload list to see', 'success');
+                                                                    setSdn92AddType(null);
+                                                                    setSdn92Loaded(false);
+                                                                } else {
+                                                                    addToast('Create failed: ' + (await r.text()), 'error');
+                                                                }
+                                                            }}
+                                                            className="px-3 py-1.5 bg-proxmox-orange hover:bg-orange-600 disabled:opacity-50 rounded text-xs">
+                                                            Create
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -5176,6 +5492,31 @@
                         {/* HA - High Availability (Proxmox Native HA) */}
                         {activeSection === 'ha' && (
                             <div className="space-y-6">
+                                {/* LW May 2026 — mirror the CRS / Auto-Rebalance settings card here
+                                    so admins managing HA find it without bouncing back to Options.
+                                    Same editingOptions state as the Options panel — edits in either
+                                    place are visible in both; saveOptions is the single submit path. */}
+                                <div className="bg-proxmox-card border border-proxmox-border rounded-xl p-4">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h3 className="font-semibold flex items-center gap-2">
+                                            <Icons.Activity className="w-4 h-4" />
+                                            {t('crsCardTitle') || 'CRS & Auto-Rebalance'}
+                                            <span className="text-[11px] text-gray-500 font-normal">{t('crsCardSubtitle') || '(same config as Datacenter → Options)'}</span>
+                                        </h3>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => setEditingOptions(parseOptionsForEdit(dcOptions))}
+                                                className="px-3 py-1.5 bg-proxmox-dark hover:bg-proxmox-border border border-proxmox-border rounded text-xs">
+                                                {t('revert') || 'Revert'}
+                                            </button>
+                                            <button onClick={saveOptions}
+                                                className="px-3 py-1.5 bg-proxmox-orange hover:bg-orange-600 rounded text-xs text-white">
+                                                {t('save') || 'Save'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                    {crsBlock}
+                                </div>
+
                                 {/* HA Status */}
                                 <div className="bg-proxmox-card border border-proxmox-border rounded-xl overflow-hidden">
                                     <div className="p-4 border-b border-proxmox-border flex justify-between items-center">
@@ -5476,8 +5817,8 @@
                                                     </div>
                                                     <div>
                                                         <label className="block text-sm text-gray-400 mb-1">Request State:</label>
-                                                        <select 
-                                                            value={newHaResource.state || 'started'} 
+                                                        <select
+                                                            value={newHaResource.state || 'started'}
                                                             onChange={e => setNewHaResource({...newHaResource, state: e.target.value})}
                                                             className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm"
                                                         >
@@ -5485,6 +5826,29 @@
                                                             <option value="stopped">stopped</option>
                                                             <option value="ignored">ignored</option>
                                                             <option value="disabled">disabled</option>
+                                                        </select>
+                                                    </div>
+                                                    {/* LW May 2026 — PVE 9.2 per-resource dynamic CRS opt-in/-out.
+                                                        Default state "unset" lets the cluster default win; admin
+                                                        explicitly enables/disables auto-rebalance per VM. Pre-9.2
+                                                        clusters ignore the field (backend version-gates). */}
+                                                    <div>
+                                                        <label className="block text-sm text-gray-400 mb-1">
+                                                            {t('crsAutoRebalance') || 'Auto-Rebalance'} <span className="text-xs text-gray-500">PVE 9.2+</span>
+                                                        </label>
+                                                        <select
+                                                            value={newHaResource.auto_rebalance === null ? '' :
+                                                                   (newHaResource.auto_rebalance ? '1' : '0')}
+                                                            onChange={e => {
+                                                                const v = e.target.value;
+                                                                setNewHaResource({...newHaResource,
+                                                                    auto_rebalance: v === '' ? null : v === '1'});
+                                                            }}
+                                                            className="w-full bg-proxmox-dark border border-proxmox-border rounded p-2 text-sm"
+                                                        >
+                                                            <option value="">{t('autoRebalanceClusterDefault') || '-- cluster default --'}</option>
+                                                            <option value="1">{t('autoRebalanceVmOn') || 'Enabled — CRS may move this VM'}</option>
+                                                            <option value="0">{t('autoRebalanceVmOff') || 'Disabled — pin to assigned node'}</option>
                                                         </select>
                                                     </div>
                                                 </div>
@@ -5520,8 +5884,14 @@
                                                         };
                                                         if (newHaResource.group) payload.group = newHaResource.group;
                                                         if (newHaResource.comment) payload.comment = newHaResource.comment;
-                                                        
-                                                        var res = await authFetch(API_URL + '/clusters/' + clusterId + '/proxmox-ha/resources', { 
+                                                        // MK May 2026 — PVE 9.2 introduced per-resource auto-rebalance
+                                                        // on /cluster/ha/resources. Only send the field if admin
+                                                        // explicitly chose; null = let the cluster CRS default win.
+                                                        if (newHaResource.auto_rebalance !== null && newHaResource.auto_rebalance !== undefined) {
+                                                            payload.auto_rebalance = newHaResource.auto_rebalance;
+                                                        }
+
+                                                        var res = await authFetch(API_URL + '/clusters/' + clusterId + '/proxmox-ha/resources', {
                                                             method: 'POST', 
                                                             headers: { 'Content-Type': 'application/json' }, 
                                                             body: JSON.stringify(payload) 
@@ -5530,7 +5900,7 @@
                                                         if (res && res.ok) { 
                                                             addToast('Resource added to HA', 'success'); 
                                                             setShowAddHaResource(false); 
-                                                            setNewHaResource({ sid: '', state: 'started', group: '', max_restart: 1, max_relocate: 1, comment: '' });
+                                                            setNewHaResource({ sid: '', state: 'started', group: '', max_restart: 1, max_relocate: 1, comment: '', auto_rebalance: null });
                                                             fetchAllData(); 
                                                         } else { 
                                                             var errData = await res.json().catch(function() { return {}; }); 

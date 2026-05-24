@@ -143,6 +143,9 @@ def load_server_settings():
         # etc.) are still rejected, and the guard remains on for all other
         # outbound paths (webhook, SAML metadata fetch, plugin upstream).
         'oidc_allow_private_ip': False,
+        # NS May 2026 (PVE 9.2 parity) — extra audiences (comma-separated)
+        # accepted on the JWT verify alongside the client_id.
+        'oidc_audiences': '',
     }
     
     try:

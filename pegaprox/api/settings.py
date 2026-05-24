@@ -1277,6 +1277,9 @@ def update_server_settings():
                 'oidc_skip_ssl_verify': lambda v: bool(v),
                 # MK May 2026 (#412) — opt-in private-IP allowlist for OIDC discovery URL
                 'oidc_allow_private_ip': lambda v: bool(v),
+                # NS May 2026 (PVE 9.2 parity) — extra audiences accepted on
+                # JWT verify, comma-separated. Empty = client_id only.
+                'oidc_audiences': lambda v: str(v or '').strip(),
             }
             
             for key, transform in oidc_keys.items():

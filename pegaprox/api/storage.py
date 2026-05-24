@@ -2202,15 +2202,54 @@ def get_node_storage_content(cluster_id, node, storage):
             url += f"?content={content_type}"
         
         resp = manager._create_session().get(url, timeout=30)
-        
+
         if resp.status_code == 200:
             data = resp.json().get('data', [])
+            # MK May 2026 (PVE 9.2) — `size` is now optional. Shared LVM /
+            # thick qcow2 storages where size is expensive to compute now
+            # populate `approximate-size` instead. Surface it as `size` for
+            # the UI when the real size is missing, with a `size_is_approx`
+            # flag so the frontend can mark it ("~12 GB").
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get('size') in (None, 0) and entry.get('approximate-size') is not None:
+                    entry['size'] = entry['approximate-size']
+                    entry['size_is_approx'] = True
             return jsonify(data)
         else:
             return jsonify([])
     except Exception as e:
         logging.error(f"Error getting storage content: {e}")
         return jsonify([])
+
+
+# MK May 2026 (PVE 9.2) — stable backend identity for a storage. For PBS this
+# is the PBS instance UUID; for other backends it's a deterministic identifier
+# we can use for cross-cluster dedup ("two clusters reference the same PBS")
+# without having to compare server+datastore strings. Pre-9.2 clusters 404
+# this endpoint, we surface it as `{ "supported": false }` so the UI can hide
+# the column.
+@bp.route('/api/clusters/<cluster_id>/nodes/<node>/storage/<storage>/identity', methods=['GET'])
+@require_auth(perms=['storage.view'])
+def get_node_storage_identity(cluster_id, node, storage):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    manager, error = get_connected_manager(cluster_id)
+    if error:
+        return error
+    try:
+        host, port = manager.host, manager.api_port
+        url = f"https://{host}:{port}/api2/json/nodes/{node}/storage/{storage}/identity"
+        resp = manager._api_get(url)
+        if resp.status_code in (404, 501):
+            return jsonify({'supported': False})
+        if resp.status_code == 200:
+            data = resp.json().get('data') or {}
+            return jsonify({'supported': True, **data})
+        return jsonify({'error': resp.text or f'HTTP {resp.status_code}'}), resp.status_code
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @bp.route('/api/clusters/<cluster_id>/nodes/<node>/storage/<storage>/download-url', methods=['POST'])

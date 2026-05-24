@@ -1211,20 +1211,25 @@ def delete_sdn_subnet(cluster_id, vnet_id, subnet_id):
 @bp.route('/api/clusters/<cluster_id>/datacenter/sdn/apply', methods=['POST'])
 @require_auth(perms=['sdn.manage'])
 def apply_sdn_config(cluster_id):
-    """Apply pending SDN configuration changes to all nodes"""
+    """Apply pending SDN configuration changes to all nodes.
+
+    Note: the `dryrun` flag mentioned in some PVE 9.2 docs is NOT in
+    9.2.2's /cluster/sdn schema (rejected with 400). We accept the param
+    on the wire for forward-compat but silently drop it until PVE adds
+    it for real — that way our caller code doesn't need to change later.
+    """
     ok, err = check_cluster_access(cluster_id)
     if not ok: return err
 
     manager, error = get_connected_manager(cluster_id)
     if error:
         return error
-    
+
     try:
         host, port = manager.host, manager.api_port
-        
         url = f"https://{host}:{port}/api2/json/cluster/sdn"
         response = manager._create_session().put(url, timeout=30)
-        
+
         if response.status_code == 200:
             user = getattr(request, 'session', {}).get('user', 'system')
             log_audit(user, 'sdn.config_applied', "Applied SDN configuration to cluster", cluster=manager.config.name)
@@ -1232,6 +1237,230 @@ def apply_sdn_config(cluster_id):
         return jsonify({'error': parse_pve_error(response.text)}), response.status_code
     except Exception as e:
         return jsonify({'error': safe_error(e, 'Failed to apply SDN config')}), 500
+
+
+# ============================================
+# SDN Fabrics (PVE 9.2+ first-class object)
+# ============================================
+# MK May 2026 — fabrics are a new top-level SDN object family in 9.2. Full
+# CRUD passthrough; protocols include the older openfabric/ospf plus the
+# new wireguard + bgp. On pre-9.2 the endpoint 404s and the route returns
+# an empty list / error transparently.
+
+# MK May 2026 — actual fabric records live at /cluster/sdn/fabrics/fabric on
+# 9.2.2; /cluster/sdn/fabrics itself returns three subdir markers
+# (fabric/node/all) for the API index. /fabrics/node is the per-node fabric
+# assignment list. We surface only the actual fabrics; pre-9.2 the endpoint
+# 404s and we return [].
+
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/fabrics', methods=['GET'])
+@require_auth(perms=['node.view'])
+def get_sdn_fabrics(cluster_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    manager, error = get_connected_manager(cluster_id)
+    if error: return error
+    try:
+        host, port = manager.host, manager.api_port
+        url = f"https://{host}:{port}/api2/json/cluster/sdn/fabrics/fabric"
+        resp = manager._api_get(url)
+        if resp.status_code in (404, 501):
+            return jsonify([])  # pre-9.2 or feature not enabled
+        if resp.status_code == 200:
+            return jsonify(resp.json().get('data', []) or [])
+        return jsonify({'error': parse_pve_error(resp.text)}), resp.status_code
+    except Exception as e:
+        return jsonify({'error': safe_error(e, 'Failed to list SDN fabrics')}), 500
+
+
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/fabrics', methods=['POST'])
+@require_auth(perms=['sdn.manage'])
+def create_sdn_fabric(cluster_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    manager, error = get_connected_manager(cluster_id)
+    if error: return error
+    try:
+        host, port = manager.host, manager.api_port
+        body = request.json or {}
+        if not body.get('fabric') or not body.get('protocol'):
+            return jsonify({'error': 'fabric and protocol required'}), 400
+        url = f"https://{host}:{port}/api2/json/cluster/sdn/fabrics/fabric"
+        resp = manager._api_post(url, data=body)
+        if resp.status_code == 200:
+            user = getattr(request, 'session', {}).get('user', 'system')
+            log_audit(user, 'sdn.fabric_created',
+                      f"Created SDN fabric: {body['fabric']} ({body['protocol']})",
+                      cluster=manager.config.name)
+            return jsonify({'success': True})
+        return jsonify({'error': parse_pve_error(resp.text)}), resp.status_code
+    except Exception as e:
+        return jsonify({'error': safe_error(e, 'Failed to create SDN fabric')}), 500
+
+
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/fabrics/<fabric_id>', methods=['PUT'])
+@require_auth(perms=['sdn.manage'])
+def update_sdn_fabric(cluster_id, fabric_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    manager, error = get_connected_manager(cluster_id)
+    if error: return error
+    try:
+        host, port = manager.host, manager.api_port
+        url = f"https://{host}:{port}/api2/json/cluster/sdn/fabrics/fabric/{fabric_id}"
+        resp = manager._api_put(url, data=request.json or {})
+        if resp.status_code == 200:
+            user = getattr(request, 'session', {}).get('user', 'system')
+            log_audit(user, 'sdn.fabric_updated', f"Updated SDN fabric: {fabric_id}", cluster=manager.config.name)
+            return jsonify({'success': True})
+        return jsonify({'error': parse_pve_error(resp.text)}), resp.status_code
+    except Exception as e:
+        return jsonify({'error': safe_error(e, 'Failed to update SDN fabric')}), 500
+
+
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/fabrics/<fabric_id>', methods=['DELETE'])
+@require_auth(perms=['sdn.manage'])
+def delete_sdn_fabric(cluster_id, fabric_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    manager, error = get_connected_manager(cluster_id)
+    if error: return error
+    try:
+        host, port = manager.host, manager.api_port
+        url = f"https://{host}:{port}/api2/json/cluster/sdn/fabrics/fabric/{fabric_id}"
+        resp = manager._api_delete(url)
+        if resp.status_code == 200:
+            user = getattr(request, 'session', {}).get('user', 'system')
+            log_audit(user, 'sdn.fabric_deleted', f"Deleted SDN fabric: {fabric_id}", cluster=manager.config.name)
+            return jsonify({'success': True})
+        return jsonify({'error': parse_pve_error(resp.text)}), resp.status_code
+    except Exception as e:
+        return jsonify({'error': safe_error(e, 'Failed to delete SDN fabric')}), 500
+
+
+# ============================================
+# SDN Route Maps + Prefix Lists (PVE 9.2+)
+# ============================================
+# NS May 2026 — two new SDN object families for BGP/EVPN policy. We expose
+# full CRUD passthrough; on pre-9.2 the upstream endpoint 404s and GETs
+# return an empty list. Avoids the UI showing scary 404s on older clusters.
+
+def _sdn_crud_resource(cluster_id, family, item_id=None):
+    """Helper: implements GET/POST/PUT/DELETE for /cluster/sdn/<family>[/{id}].
+    Returns (status_code, response_body|None, error|None). Used by all the
+    routemap + prefixlist routes below.
+    """
+    manager, error = get_connected_manager(cluster_id)
+    if error:
+        return None, error  # error is already a (resp, code) tuple
+    host, port = manager.host, manager.api_port
+    base_url = f"https://{host}:{port}/api2/json/cluster/sdn/{family}"
+    method = request.method
+    try:
+        if method == 'GET':
+            url = base_url if not item_id else f"{base_url}/{item_id}"
+            resp = manager._api_get(url)
+            if resp.status_code in (404, 501):
+                # pre-9.2: family doesn't exist
+                return (jsonify([] if not item_id else {}), 200)
+            if resp.status_code == 200:
+                return (jsonify(resp.json().get('data', [] if not item_id else {})), 200)
+            return (jsonify({'error': parse_pve_error(resp.text)}), resp.status_code)
+
+        body = request.json or {}
+        if method == 'POST':
+            resp = manager._api_post(base_url, data=body)
+        elif method == 'PUT':
+            resp = manager._api_put(f"{base_url}/{item_id}", data=body)
+        elif method == 'DELETE':
+            resp = manager._api_delete(f"{base_url}/{item_id}")
+        else:
+            return (jsonify({'error': 'Method not allowed'}), 405)
+        if resp.status_code == 200:
+            return (jsonify({'success': True}), 200)
+        return (jsonify({'error': parse_pve_error(resp.text)}), resp.status_code)
+    except Exception as e:
+        return (jsonify({'error': safe_error(e, 'SDN operation failed')}), 500)
+
+
+# --- routemaps ---
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/routemaps', methods=['GET'])
+@require_auth(perms=['node.view'])
+def list_sdn_routemaps(cluster_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    return _sdn_crud_resource(cluster_id, 'route-maps')
+
+
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/routemaps', methods=['POST'])
+@require_auth(perms=['sdn.manage'])
+def create_sdn_routemap(cluster_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    user = getattr(request, 'session', {}).get('user', 'system')
+    name = (request.json or {}).get('routemap', '?')
+    result = _sdn_crud_resource(cluster_id, 'route-maps')
+    if result[1] == 200:
+        manager, _ = get_connected_manager(cluster_id)
+        log_audit(user, 'sdn.routemap_created', f"Created SDN routemap: {name}",
+                  cluster=manager.config.name if manager else cluster_id)
+    return result
+
+
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/routemaps/<routemap_id>', methods=['PUT'])
+@require_auth(perms=['sdn.manage'])
+def update_sdn_routemap(cluster_id, routemap_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    return _sdn_crud_resource(cluster_id, 'route-maps', routemap_id)
+
+
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/routemaps/<routemap_id>', methods=['DELETE'])
+@require_auth(perms=['sdn.manage'])
+def delete_sdn_routemap(cluster_id, routemap_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    return _sdn_crud_resource(cluster_id, 'route-maps', routemap_id)
+
+
+# --- prefixlists ---
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/prefixlists', methods=['GET'])
+@require_auth(perms=['node.view'])
+def list_sdn_prefixlists(cluster_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    return _sdn_crud_resource(cluster_id, 'prefix-lists')
+
+
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/prefixlists', methods=['POST'])
+@require_auth(perms=['sdn.manage'])
+def create_sdn_prefixlist(cluster_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    user = getattr(request, 'session', {}).get('user', 'system')
+    name = (request.json or {}).get('prefixlist', '?')
+    result = _sdn_crud_resource(cluster_id, 'prefix-lists')
+    if result[1] == 200:
+        manager, _ = get_connected_manager(cluster_id)
+        log_audit(user, 'sdn.prefixlist_created', f"Created SDN prefixlist: {name}",
+                  cluster=manager.config.name if manager else cluster_id)
+    return result
+
+
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/prefixlists/<prefixlist_id>', methods=['PUT'])
+@require_auth(perms=['sdn.manage'])
+def update_sdn_prefixlist(cluster_id, prefixlist_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    return _sdn_crud_resource(cluster_id, 'prefix-lists', prefixlist_id)
+
+
+@bp.route('/api/clusters/<cluster_id>/datacenter/sdn/prefixlists/<prefixlist_id>', methods=['DELETE'])
+@require_auth(perms=['sdn.manage'])
+def delete_sdn_prefixlist(cluster_id, prefixlist_id):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    return _sdn_crud_resource(cluster_id, 'prefix-lists', prefixlist_id)
 
 
 # ============================================

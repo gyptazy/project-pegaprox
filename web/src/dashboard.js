@@ -420,77 +420,93 @@
         // State management is a bit messy but it works // shrug
         // LW: Password Expiry Warning Banner - Dec 2025
         // Shows a warning when user's password is about to expire or has expired
-        // MK Apr 2026 — Capacity Outlook card. Shows the cluster's predictive forecast
-        // (pega-wma-v2 engine). At-a-glance: how many nodes the WMA projects will cross
-        // the configured threshold soon. Click to expand per-node breakdown.
+        // LW May 2026 — corporate-overview glance card. Cluster-wide aggregate from
+        // /insights/forecast (linear regression + R² gating). One number + one sub-line,
+        // no expand. Drilldown lives on the Insights page.
         function CapacityOutlookCard({ clusterId, t, getAuthHeaders }) {
             const [data, setData] = useState(null);
-            const [expanded, setExpanded] = useState(false);
 
             useEffect(() => {
                 if (!clusterId) { setData(null); return; }
                 let aborted = false;
                 const load = async () => {
                     try {
-                        const r = await fetch(`${API_URL}/clusters/${clusterId}/predictive-analysis`, {
+                        const r = await fetch(`${API_URL}/clusters/${clusterId}/insights/forecast`, {
                             credentials: 'include', headers: getAuthHeaders()
                         });
                         if (!aborted && r.ok) setData(await r.json());
                     } catch(e) {}
                 };
                 load();
-                // refresh with the rest of the dashboard — every 30s feels right
-                const iv = setInterval(load, 30000);
+                const iv = setInterval(load, 60000);
                 return () => { aborted = true; clearInterval(iv); };
             }, [clusterId]);
 
-            const byNode = data?.nodes || {};
-            const entries = Object.entries(byNode).map(([name, d]) => ({name, ...d}));
-            const risky = entries.filter(e => e.trend === 'critical' || e.trend === 'rising');
-            const worst = entries.reduce((a, b) => (a && a.score > b.score) ? a : b, null);
-            const threshold = data?.threshold || 75;
+            const forecasts = data?.forecasts || [];
+            const STATUS_RANK = { critical: 5, over_threshold: 4, warning: 3, trending_up: 2, decreasing: 1, stable: 0 };
+            const RISK = ['critical', 'over_threshold', 'warning'];
+            const risky = forecasts.filter(f => RISK.includes(f.status));
+            // worst = highest status rank, tiebreak on closest ETA
+            const worst = forecasts.reduce((acc, f) => {
+                if (!acc) return f;
+                const a = STATUS_RANK[acc.status] ?? 0;
+                const b = STATUS_RANK[f.status] ?? 0;
+                if (b > a) return f;
+                if (b === a) {
+                    const aEta = acc.eta_days ?? 9999;
+                    const bEta = f.eta_days ?? 9999;
+                    return bEta < aEta ? f : acc;
+                }
+                return acc;
+            }, null);
+            const enoughData = data?.enough_data !== false;
 
-            // trend → color
-            const trendColor = (tr) => tr === 'critical' ? 'var(--color-error)'
-                                     : tr === 'rising' ? 'var(--color-warning)'
-                                     : tr === 'stable' ? 'var(--color-success)'
-                                     : 'var(--corp-text-muted)';
-            const headline = risky.length > 0
-                ? `${risky.length} ${risky.length === 1 ? (t('nodeAtRisk') || 'node at risk') : (t('nodesAtRisk') || 'nodes at risk')}`
-                : (entries.length > 0 ? (t('allNodesStable') || 'all nodes stable') : '—');
+            const statusColor = (s) =>
+                (s === 'critical' || s === 'over_threshold') ? 'var(--color-error)'
+                : (s === 'warning' || s === 'trending_up') ? 'var(--color-warning)'
+                : 'var(--color-success)';
+
+            const metricLabel = (m) => {
+                if (m === 'cluster_cpu') return t('cpu') || 'CPU';
+                if (m === 'cluster_memory') return t('memory') || 'Memory';
+                return m;
+            };
+
+            // headline = single value (ETA-days, or status word)
+            // sub     = one-line context
+            let value, sub, valueColor;
+            if (data == null) {
+                value = '…'; sub = t('loading') || 'loading…';
+            } else if (!enoughData) {
+                value = '—';
+                sub = data.snapshots_in_window != null
+                    ? `${t('capacityCollecting') || 'collecting'} (${data.snapshots_in_window})`
+                    : (t('capacityCollecting') || 'collecting data…');
+            } else if (worst && worst.status === 'over_threshold') {
+                value = `${worst.current_pct}%`;
+                valueColor = statusColor(worst.status);
+                sub = `${metricLabel(worst.metric)} ${t('overThreshold') || 'over threshold'}`;
+            } else if (worst && worst.eta_days != null) {
+                value = `${worst.eta_days}d`;
+                valueColor = statusColor(worst.status);
+                sub = `${metricLabel(worst.metric)} → ${data.threshold_pct || 90}%`;
+            } else {
+                value = t('stable') || 'stable';
+                valueColor = 'var(--color-success)';
+                sub = forecasts.length > 0
+                    ? `${forecasts.length} ${forecasts.length === 1 ? (t('metric') || 'metric') : (t('metrics') || 'metrics')}`
+                    : '—';
+            }
 
             return (
-                <div className="corp-overview-card" style={{cursor: entries.length > 0 ? 'pointer' : 'default'}}
-                     onClick={() => entries.length > 0 && setExpanded(v => !v)}>
+                <div className="corp-overview-card">
                     <div style={{width: 48, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0}}>
-                        <Icons.Activity className="w-6 h-6" style={{color: risky.length > 0 ? trendColor(worst?.trend) : 'var(--corp-accent)'}} />
+                        <Icons.Activity className="w-6 h-6" style={{color: risky.length > 0 ? statusColor(worst?.status) : 'var(--corp-accent)'}} />
                     </div>
                     <div style={{flex: 1, minWidth: 0}}>
                         <div className="corp-overview-label">{t('capacityOutlook') || 'Capacity Outlook'}</div>
-                        <div className="corp-overview-value" style={{fontSize: 16, color: risky.length > 0 ? trendColor(worst?.trend) : 'var(--corp-text-primary, #e9ecef)'}}>
-                            {headline}
-                        </div>
-                        <div className="corp-overview-sub">
-                            {data == null ? (t('loading') || 'loading…')
-                                : worst ? `${t('peakScore') || 'peak'}: ${worst.name} ${worst.score}` : ''}
-                        </div>
-                        {expanded && entries.length > 0 && (
-                            <div onClick={e => e.stopPropagation()} style={{marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--corp-border-subtle, #283844)', maxHeight: 180, overflowY: 'auto'}}>
-                                {entries.sort((a, b) => (b.score || 0) - (a.score || 0)).map(e => (
-                                    <div key={e.name} className="flex items-center justify-between py-1" style={{fontSize: 11}}>
-                                        <span style={{color: 'var(--corp-text-primary, #e9ecef)', fontFamily: 'monospace'}}>{e.name}</span>
-                                        <div className="flex items-center gap-2">
-                                            <span style={{color: 'var(--corp-text-muted)'}}>CPU~{e.cpu_forecast}% · RAM~{e.mem_forecast}%</span>
-                                            <span style={{color: trendColor(e.trend), fontWeight: 600, minWidth: 52, textAlign: 'right'}}>{e.score}</span>
-                                            <span style={{color: trendColor(e.trend), fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5}}>{e.trend}</span>
-                                        </div>
-                                    </div>
-                                ))}
-                                <div className="text-[10px] mt-2" style={{color: 'var(--corp-text-muted)'}}>
-                                    {t('wmaEngine') || 'Forecast'}: pega-wma-v2 · {t('threshold') || 'threshold'}: {threshold}
-                                </div>
-                            </div>
-                        )}
+                        <div className="corp-overview-value" style={{color: valueColor || 'var(--corp-text-primary, #e9ecef)'}}>{value}</div>
+                        <div className="corp-overview-sub">{sub}</div>
                     </div>
                 </div>
             );
@@ -17028,6 +17044,34 @@
                                                                 <span className="text-gray-300">{t('sshAuthMode') || 'SSH: Password'}</span>
                                                             </div>
                                                             <p className="text-xs text-gray-500">{t('dontChangePvePassword') || "Don't change the PVE password without updating it here"}</p>
+                                                            {/* LW May 2026 — PVE 9.2 in-place token regenerate. Pre-9.2
+                                                                falls back to delete+create with explicit "ACLs lost"
+                                                                warning. Admin-only. */}
+                                                            {isAdmin && selectedCluster.api_token_active && (
+                                                                <button
+                                                                    onClick={async () => {
+                                                                        if (!confirm(t('confirmRotateToken') ||
+                                                                            ('Rotate the API token for this cluster?\n\n' +
+                                                                             'PVE 9.2: secret is regenerated in-place, ACLs preserved.\n' +
+                                                                             'PVE 8.x / 9.0 / 9.1: token is deleted + recreated — any ACL entries on the token will be lost.'))) return;
+                                                                        try {
+                                                                            const r = await authFetch(`${API_URL}/clusters/${selectedCluster.id}/api-token/rotate`, {method: 'POST'});
+                                                                            const d = await r.json();
+                                                                            if (r.ok && d.success) {
+                                                                                addToast(d.message || (t('tokenRotated') || 'API token rotated'),
+                                                                                    d.acls_preserved ? 'success' : 'warning');
+                                                                            } else {
+                                                                                addToast(d.error || (t('rotateFailed') || 'Rotation failed'), 'error');
+                                                                            }
+                                                                        } catch (e) {
+                                                                            addToast(String(e), 'error');
+                                                                        }
+                                                                    }}
+                                                                    className="mt-2 px-3 py-1.5 bg-proxmox-dark hover:bg-proxmox-border border border-proxmox-border rounded text-xs text-gray-300 hover:text-white flex items-center gap-1.5">
+                                                                    <Icons.RefreshCw className="w-3 h-3" />
+                                                                    {t('rotateApiToken') || 'Rotate API Token'}
+                                                                </button>
+                                                            )}
                                                         </div>
                                                     </div>
 

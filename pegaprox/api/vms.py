@@ -133,13 +133,29 @@ def get_datacenter_status(cluster_id):
     try:
         host, port = manager.host, manager.api_port
 
-        # get cluster status
+        # MK May 2026 — cluster-wide aggregates ([cluster/status] + [cluster/resources])
+        # are genuinely expensive on big clusters (PVE walks every node to build the
+        # response). 10s was too tight; bump to 15s and mark the host as cold on
+        # timeout so subsequent calls roll over to a fallback host via the
+        # connect_to_proxmox skip-cache.
         status_url = f"https://{host}:{port}/api2/json/cluster/status"
-        status_resp = manager._create_session().get(status_url, timeout=10)
-
-        # get resources
         resources_url = f"https://{host}:{port}/api2/json/cluster/resources"
-        resources_resp = manager._create_session().get(resources_url, timeout=10)
+        try:
+            status_resp = manager._create_session().get(status_url, timeout=15)
+            resources_resp = manager._create_session().get(resources_url, timeout=15)
+        except requests.exceptions.Timeout:
+            # Mark host cold AND force an immediate reconnect so manager.host
+            # pivots to a warm fallback for the next request. Without the
+            # reconnect, _mark_host_failure only affects later
+            # connect_to_proxmox() calls — but the current manager.host
+            # pointer still points at the dead primary.
+            manager._mark_host_failure(host)
+            try:
+                manager.is_connected = False
+                manager.connect_to_proxmox()
+            except Exception:
+                pass  # best-effort; user will see the timeout this round
+            raise
 
         status_data = status_resp.json().get('data', []) if status_resp.status_code == 200 else []
         resources_data = resources_resp.json().get('data', []) if resources_resp.status_code == 200 else []
@@ -446,11 +462,68 @@ def set_datacenter_options(cluster_id):
         raw_data = request.json or {}
         data = {k: v for k, v in raw_data.items() if k in ALLOWED_DC_OPTIONS}
 
-        response = manager._create_session().put(url, data=data, timeout=10)
-        
+        # MK May 2026 — version-gate the crs sub-keys. Live-probed PVE 9.2.2:
+        #   scheduling=basic  → 400 "property is not defined in schema"
+        #   ha-rebalance-on-start=1 → 200 OK
+        #   ha-auto-rebalance=1     → 200 OK
+        #   ha-auto-rebalance-{threshold,method,margin,hold-duration} → 200 OK
+        # Any one rejected sub-key tanks the whole crs PUT — so a UI that
+        # picks "Basic" in the Scheduling Mode dropdown blocked every other
+        # CRS field too. Strip `scheduling=` on 9.2+ so admins can still
+        # save the auto-rebalance settings.
+        # (Pre-9.2 keeps scheduling — it's still in the schema there.)
+        if 'crs' in data and isinstance(data['crs'], str) and data['crs']:
+            pve_ver = manager.get_pve_version_tuple()
+            if pve_ver is not None and pve_ver >= (9, 2):
+                kept = []
+                dropped = []
+                for part in data['crs'].split(','):
+                    key = part.split('=', 1)[0].strip()
+                    if key == 'scheduling':
+                        dropped.append(part)
+                        continue
+                    kept.append(part)
+                if dropped:
+                    data['crs'] = ','.join(kept)
+                    if not data['crs']:
+                        data.pop('crs', None)
+                    try:
+                        from pegaprox.utils.audit import log_audit
+                        log_audit(request.session.get('user', 'system'),
+                                  'datacenter.crs.stripped',
+                                  f"PVE {pve_ver[0]}.{pve_ver[1]} — dropped {dropped}",
+                                  cluster=manager.config.name)
+                    except Exception:
+                        pass
+
+        # MK May 2026 — /cluster/options PUT can legitimately take 15-25s on
+        # busy clusters (PVE writes datacenter.cfg, ipcc-syncs to all nodes,
+        # restarts pveproxy on each). The old 10s was tight enough to fail
+        # consistently on the ESXi-Test-Env lab; bump to 30s. If it still
+        # times out the host is genuinely wedged — mark it cold so the next
+        # request goes via fallback instead of waiting 30s again.
+        try:
+            response = manager._create_session().put(url, data=data, timeout=30)
+        except requests.exceptions.Timeout:
+            manager._mark_host_failure(host)
+            try:
+                manager.is_connected = False
+                manager.connect_to_proxmox()
+            except Exception:
+                pass
+            raise
+
         if response.status_code == 200:
             return jsonify({'success': True, 'message': 'Options updated'})
         return jsonify({'error': parse_pve_error(response.text)}), response.status_code
+    except requests.exceptions.Timeout:
+        # Map to 504 so the frontend knows it's a slow-PVE thing, not a code bug.
+        # Settings *may* have applied — pveproxy on busy clusters sometimes
+        # commits the write but doesn't reply in time. Operator should re-load.
+        return jsonify({
+            'error': 'PVE took too long to apply datacenter options. The change may still have been written — reload the page to verify.',
+            'timeout': True,
+        }), 504
     except Exception as e:
         return jsonify({'error': safe_error(e, 'Failed to set datacenter options')}), 500
 
@@ -3568,10 +3641,7 @@ def get_node_shell_ticket(cluster_id, node):
         return jsonify({'error': result['error']}), 500
 
 
-# VM Config API Routes
-@bp.route('/api/clusters/<cluster_id>/vms/<node>/<vm_type>/<int:vmid>/config', methods=['GET'])
-@require_auth(perms=['vm.view'])
-def get_vm_config_api(cluster_id, node, vm_type, vmid):
+def _get_vm_config_response(cluster_id, node, vm_type, vmid):
     ok, err = check_cluster_access(cluster_id)
     if not ok: return err
     
@@ -3586,9 +3656,93 @@ def get_vm_config_api(cluster_id, node, vm_type, vmid):
         return jsonify({'error': 'Cluster temporarily unreachable', 'offline': True}), 503
 
     if result['success']:
-        return jsonify(result['config'])
+        config = result['config']
+        if isinstance(config, dict) and not config.get('tags') and not config.get('tag'):
+            raw = config.get('raw') if isinstance(config.get('raw'), dict) else {}
+            general = config.get('general') if isinstance(config.get('general'), dict) else {}
+            vm_tags = raw.get('tags') or general.get('tags')
+            if vm_tags:
+                config['tags'] = vm_tags
+        return jsonify(config)
     else:
         return jsonify({'error': result['error']}), 500
+
+
+def _resolve_vm_location(mgr, vmid, requested_node=None, requested_type=None):
+    """Find the current node/type for a VMID so shorthand VM routes can work."""
+    requested_node = (requested_node or '').strip() or None
+    requested_type = (requested_type or '').strip() or None
+    if requested_type == 'ct':
+        requested_type = 'lxc'
+
+    try:
+        if getattr(mgr, 'cluster_type', 'proxmox') == 'xcpng':
+            resources = mgr.get_vms() or []
+        else:
+            resources = mgr.get_vm_resources() or []
+    except Exception as e:
+        logging.warning(f"[API] Failed to resolve VM {vmid} location: {e}")
+        return None, None, jsonify({'error': safe_error(e, 'Failed to resolve VM location')}), 500
+
+    matches = []
+    for item in resources:
+        if str(item.get('vmid')) != str(vmid):
+            continue
+        item_type = item.get('type') or 'qemu'
+        item_node = item.get('node') or requested_node
+        if requested_type and item_type != requested_type:
+            continue
+        if requested_node and item_node != requested_node:
+            continue
+        matches.append((item_node, item_type))
+
+    if not matches:
+        return None, None, jsonify({'error': f'VM {vmid} not found'}), 404
+
+    unique = []
+    for match in matches:
+        if match not in unique:
+            unique.append(match)
+
+    if len(unique) > 1:
+        return None, None, jsonify({
+            'error': f'VM {vmid} is ambiguous; use /vms/<node>/<type>/{vmid}/config',
+            'matches': [{'node': node, 'type': vm_type} for node, vm_type in unique],
+        }), 409
+
+    node, vm_type = unique[0]
+    if not node:
+        node = requested_node or 'xcpng'
+    return node, vm_type, None, None
+
+
+# VM Config API Routes
+@bp.route('/api/clusters/<cluster_id>/vms/<int:vmid>/config', methods=['GET'])
+@require_auth(perms=['vm.view'])
+def get_vm_config_by_id_api(cluster_id, vmid):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+
+    if cluster_id not in cluster_managers:
+        return jsonify({'error': 'Cluster not found'}), 404
+
+    mgr = cluster_managers[cluster_id]
+    node, vm_type, error_body, status = _resolve_vm_location(
+        mgr,
+        vmid,
+        requested_node=request.args.get('node'),
+        requested_type=request.args.get('type') or request.args.get('vm_type'),
+    )
+    if error_body is not None:
+        return error_body, status
+
+    return _get_vm_config_response(cluster_id, node, vm_type, vmid)
+
+
+@bp.route('/api/clusters/<cluster_id>/vms/<node>/<vm_type>/<int:vmid>/config', methods=['GET'])
+@require_auth(perms=['vm.view'])
+def get_vm_config_api(cluster_id, node, vm_type, vmid):
+    return _get_vm_config_response(cluster_id, node, vm_type, vmid)
 
 
 @bp.route('/api/clusters/<cluster_id>/vms/<node>/<vm_type>/<int:vmid>/lock', methods=['GET'])
@@ -3777,6 +3931,53 @@ def get_vm_guest_fsinfo_api(cluster_id, node, vm_type, vmid):
         payload['reason'] = f'error: {e}'
 
     return jsonify(payload)
+
+
+# NS May 2026 — read a file from a running VM via the qemu-guest-agent.
+# PVE 9.2 added optional `count`, `offset`, `decode` (base64) params so you
+# can stream large files in chunks without dragging the whole thing through
+# memory. We pass them through; older PVE silently ignores extras.
+@bp.route('/api/clusters/<cluster_id>/vms/<node>/<vm_type>/<int:vmid>/guest-file-read', methods=['POST'])
+@require_auth(perms=['vm.view'])
+def get_vm_guest_file_read_api(cluster_id, node, vm_type, vmid):
+    ok, err = check_cluster_access(cluster_id)
+    if not ok: return err
+    if cluster_id not in cluster_managers:
+        return jsonify({'error': 'Cluster not found'}), 404
+    if vm_type != 'qemu':
+        return jsonify({'error': 'Guest-agent file-read is QEMU-only'}), 400
+
+    mgr = cluster_managers[cluster_id]
+    body = request.json or {}
+    file_path = body.get('file')
+    if not file_path:
+        return jsonify({'error': 'file path required'}), 400
+
+    params = {'file': file_path}
+    # 9.2 optional params — accept ints + a base64 toggle
+    for k in ('count', 'offset'):
+        if k in body and body[k] not in (None, ''):
+            try:
+                params[k] = int(body[k])
+            except (TypeError, ValueError):
+                return jsonify({'error': f'{k} must be an integer'}), 400
+    if body.get('decode'):
+        # PVE expects '1' / '0', accept boolean or string
+        params['decode'] = 1 if body['decode'] in (True, 1, '1', 'true') else 0
+
+    try:
+        url = f"https://{mgr.host}:{mgr.api_port}/api2/json/nodes/{node}/qemu/{vmid}/agent/file-read"
+        resp = mgr._api_post(url, data=params)
+        if resp.status_code == 200:
+            data = (resp.json().get('data') or {})
+            return jsonify({
+                'content': data.get('content'),
+                'truncated': bool(data.get('truncated', False)),
+                'bytes_read': data.get('bytes-read') or data.get('content-size'),
+            })
+        return jsonify({'error': resp.text or f'HTTP {resp.status_code}'}), resp.status_code
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @bp.route('/api/clusters/<cluster_id>/vms/<node>/<vm_type>/<int:vmid>/rrd/<timeframe>', methods=['GET'])
@@ -5312,11 +5513,16 @@ def _execute_local_replication(job):
         except:
             pass
 
+        # MK May 2026 (#448) — same hostname-vs-name fix as the xcrepl path.
         clone_data = {
             'newid': clone_vmid,
             'full': 1,
-            'name': f'repl-{vmid}-{target_node}',
         }
+        clone_label = f'repl-{vmid}-{target_node}'
+        if vm_type == 'lxc':
+            clone_data['hostname'] = clone_label
+        else:
+            clone_data['name'] = clone_label
         if use_snap_clone:
             clone_data['snapname'] = snap_name
         if target_storage:
@@ -5533,11 +5739,21 @@ def _execute_replication(job):
         except Exception as e:
             logging.debug(f"[XCREPL] Could not detect storage type: {e}")
 
+        # MK May 2026 (#448 @DarmokNoob) — PVE clone schema differs by VM type:
+        # QEMU (`/qemu/{vmid}/clone`) accepts `name=` for the clone label;
+        # LXC  (`/lxc/{vmid}/clone`)  rejects `name=` as "property is not
+        # defined in schema" and wants `hostname=` instead. Confirmed via
+        # pvesh + curl by the reporter. Earlier this function always sent
+        # `name`, so every cross-cluster LXC DR job 400'd at the clone step.
         clone_data = {
             'newid': clone_vmid,
             'full': 1,
-            'name': f'xcrepl-{vmid}-tmp',
         }
+        clone_label = f'xcrepl-{vmid}-tmp'
+        if vm_type == 'lxc':
+            clone_data['hostname'] = clone_label
+        else:
+            clone_data['name'] = clone_label
         if use_snap_clone:
             clone_data['snapname'] = snap_name
 
@@ -8708,6 +8924,4 @@ def create_container_api(cluster_id, node):
         return jsonify(result)
     else:
         return jsonify(result), 400
-
-
 

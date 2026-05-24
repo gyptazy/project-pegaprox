@@ -344,9 +344,20 @@ class PegaProxManager:
             fh.setFormatter(formatter)
             self.logger.addHandler(fh)
 
-        # Console handler - INFO level (no DEBUG spam)
+        # Console handler — defaults to INFO so the systemd journal stays
+        # readable on busy clusters, but the operator can raise the floor via
+        # PEGAPROX_LOG_LEVEL.
+        # MK May 2026 (#357 follow-up @SeeJayEmm) — earlier the per-cluster
+        # logger had `propagate=False` AND a hardcoded INFO StreamHandler, so
+        # PEGAPROX_LOG_LEVEL=WARNING only quieted the root logger; per-cluster
+        # INFO lines kept landing in journald. Honour the env var on the
+        # StreamHandler too: env-level wins iff it's stricter than INFO.
+        from pegaprox.constants import LOG_LEVEL as _ENV_LOG_LEVEL
         ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
+        _stream_level = logging.INFO
+        if _ENV_LOG_LEVEL is not None and _ENV_LOG_LEVEL > _stream_level:
+            _stream_level = _ENV_LOG_LEVEL
+        ch.setLevel(_stream_level)
         ch.setFormatter(formatter)
         self.logger.addHandler(ch)
         
@@ -367,10 +378,42 @@ class PegaProxManager:
         self._disabled_check_counter = 0  # LW: for checking connection even when disabled
         self._last_reconnect_attempt = 0  # NS: Feb 2026 - throttle reconnection attempts in broadcast loop
         self._consecutive_empty_responses = 0  # NS: Feb 2026 - detect stale tickets (connected but empty data)
-        
-        # Default timeout for API requests
+
+        # MK May 2026 (#444) — auth-circuit-breaker. surreal70 reported a DoS where
+        # stale root creds made our workers spam /access/ticket until pveproxy
+        # locked out everything (including the legit Proxmox web UI). Three
+        # consecutive 401s → backoff schedule (60s → 5min → 30min). Reset on
+        # successful login.
+        self._auth_failures = 0
+        self._auth_blocked_until = 0.0   # epoch seconds
+        self._auth_failure_lock = threading.RLock()
+
+        # MK May 2026 — per-node circuit-breaker. Same shape as auth-breaker,
+        # but keyed by node name. Stops UI hangs when a node is down: after 3
+        # consecutive timeouts we mark the node unreachable for 60s; fan-out
+        # queries (_get_node_ip, _pve_node_exec) bail immediately. Reset on
+        # any successful node-targeted call.
+        self._node_failures = {}          # node_name → int
+        self._node_blocked_until = {}     # node_name → epoch seconds
+        self._node_lock = threading.RLock()
+
+        # Per-host (login-target) failure cache for connect_to_proxmox host
+        # iteration. If primary 192.168.1.3 timed out 8 seconds ago, the next
+        # call should skip it and go straight to fallback rather than burn
+        # another 10s waiting for the same dead host.
+        self._host_last_failure = {}      # host_string → epoch seconds
+        self._host_failure_lock = threading.RLock()
+        self._host_skip_window = 60       # seconds to skip a host after a timeout
+
+        # Default timeouts for API requests. Cluster-wide aggregates
+        # (/cluster/resources, /cluster/status, /access/ticket) keep the
+        # longer 10s budget — PVE genuinely needs that on big clusters. But
+        # per-node calls (/nodes/<n>/status, rrd, network, agent) are
+        # cheaper and a dead node burns the full budget for nothing, so we
+        # tighten those to 4s by default.
         self.api_timeout = 10
-        
+        self.per_node_timeout = 4
+
         # Lock for connection operations
         self._connect_lock = threading.Lock()
     
@@ -473,7 +516,113 @@ class PegaProxManager:
     @property
     def ticket(self) -> str:
         return self._ticket
-    
+
+    # MK May 2026 (#444) — circuit breaker. Backoff schedule kicks in after
+    # 3 consecutive 401s so we don't let stale-cred storms spam pveproxy until
+    # its own brute-force-protection locks out the legit Proxmox web UI.
+    def _register_auth_failure(self):
+        with self._auth_failure_lock:
+            self._auth_failures += 1
+            if self._auth_failures >= 10:
+                backoff = 1800   # 30 min — admin clearly hasn't reconfigured
+            elif self._auth_failures >= 5:
+                backoff = 300    # 5 min
+            elif self._auth_failures >= 3:
+                backoff = 60     # 1 min
+            else:
+                return
+            self._auth_blocked_until = time.time() + backoff
+            self.connection_error = (
+                f"Authentication blocked for {backoff}s after {self._auth_failures} "
+                f"consecutive 401s — verify credentials and run Reconfigure"
+            )
+            self.logger.warning(
+                f"[AUTH] cluster '{self.config.name}' blocked for {backoff}s "
+                f"after {self._auth_failures} consecutive auth failures"
+            )
+
+    def _reset_auth_failures(self):
+        with self._auth_failure_lock:
+            if self._auth_failures:
+                self.logger.info(f"[AUTH] cluster '{self.config.name}' auth recovered after {self._auth_failures} failures")
+            self._auth_failures = 0
+            self._auth_blocked_until = 0.0
+
+    # MK May 2026 — per-node circuit breaker. Same backoff curve as the auth
+    # breaker so the math + log shape stay familiar. Keyed by *node name*
+    # (the PVE node identifier, e.g. 'pve1'), not host IP — node name is what
+    # _get_node_ip / _pve_node_exec take as their primary arg.
+    def _register_node_failure(self, node_name):
+        if not node_name:
+            return
+        with self._node_lock:
+            count = self._node_failures.get(node_name, 0) + 1
+            self._node_failures[node_name] = count
+            if count >= 10:
+                backoff = 1800
+            elif count >= 5:
+                backoff = 300
+            elif count >= 3:
+                backoff = 60
+            else:
+                return
+            self._node_blocked_until[node_name] = time.time() + backoff
+            self.logger.warning(
+                f"[NODE] cluster '{self.config.name}' node '{node_name}' "
+                f"blocked for {backoff}s after {count} consecutive failures"
+            )
+
+    def _reset_node_failures(self, node_name):
+        if not node_name:
+            return
+        with self._node_lock:
+            prior = self._node_failures.pop(node_name, 0)
+            self._node_blocked_until.pop(node_name, None)
+            if prior:
+                self.logger.info(f"[NODE] cluster '{self.config.name}' node '{node_name}' recovered after {prior} failures")
+
+    def _is_node_blocked(self, node_name):
+        """Returns (blocked: bool, remaining_seconds: int) for the given node name."""
+        if not node_name:
+            return False, 0
+        with self._node_lock:
+            until = self._node_blocked_until.get(node_name, 0)
+            now = time.time()
+            if now < until:
+                return True, int(until - now)
+        return False, 0
+
+    # Per-host failure cache for connect_to_proxmox host iteration. We don't
+    # need the full backoff machinery here — just "did this host time out
+    # very recently? skip it for the next minute".
+    def _mark_host_failure(self, host):
+        if not host:
+            return
+        with self._host_failure_lock:
+            self._host_last_failure[host] = time.time()
+            self.logger.debug(f"[HOST] '{host}' marked cold; will skip for {self._host_skip_window}s")
+
+    def _host_recently_failed(self, host):
+        if not host:
+            return False
+        with self._host_failure_lock:
+            ts = self._host_last_failure.get(host, 0)
+            return (time.time() - ts) < self._host_skip_window
+
+    def _clear_host_failure(self, host):
+        if not host:
+            return
+        with self._host_failure_lock:
+            self._host_last_failure.pop(host, None)
+
+    def _is_auth_blocked(self):
+        """Check the backoff window. Returns (blocked: bool, remaining_seconds: int)."""
+        with self._auth_failure_lock:
+            now = time.time()
+            if now < self._auth_blocked_until:
+                return True, int(self._auth_blocked_until - now)
+        return False, 0
+
     # LW: All API methods go through these wrappers for consistent error handling
     # MK: Jan 2026 - Fixed timeout handling, was marking cluster offline too eagerly
     # NS May 2026 — instrumented for the API latency dashboard. Cheap (deque, monotonic).
@@ -520,6 +669,12 @@ class PegaProxManager:
             self.connection_error = None
             self._consecutive_failures = 0  # reset failure counter on success
             self._record_api_sample('GET', url, (time.monotonic() - t0) * 1000.0, response.status_code)
+            # MK May 2026 (#444) — PVE rejected the ticket. Invalidate locally so the
+            # next call has to re-login (which the circuit breaker will gate).
+            if response.status_code == 401:
+                self._ticket = None
+                self._csrf_token = None
+                self._register_auth_failure()
             return response
         except requests.exceptions.Timeout as e:
             # MK: Timeout != offline. Proxmox might just be slow (happens a lot with ZFS)
@@ -547,6 +702,10 @@ class PegaProxManager:
             self._consecutive_failures = 0
             self._auto_capture_upid(resp)  # MK May 2026 — bind PVE task to PegaProx user
             self._record_api_sample('POST', url, (time.monotonic() - t0) * 1000.0, resp.status_code)
+            if resp.status_code == 401:
+                self._ticket = None
+                self._csrf_token = None
+                self._register_auth_failure()
             return resp
         except requests.exceptions.Timeout as e:
             # MK: Timeout does NOT mean cluster is offline
@@ -573,6 +732,10 @@ class PegaProxManager:
             self._consecutive_failures = 0
             self._auto_capture_upid(response)
             self._record_api_sample('PUT', url, (time.monotonic() - t0) * 1000.0, response.status_code)
+            if response.status_code == 401:
+                self._ticket = None
+                self._csrf_token = None
+                self._register_auth_failure()
             return response
         except requests.exceptions.Timeout as e:
             # MK: Timeout does NOT mean cluster is offline - operation might have succeeded
@@ -682,6 +845,18 @@ class PegaProxManager:
     def connect_to_proxmox(self) -> bool:
         # connect with fallback
         with self._connect_lock:
+            # MK May 2026 (#444) — bail BEFORE we hit the network if the
+            # circuit breaker has us in a backoff window. Avoids the
+            # stale-cred login storm against pveproxy.
+            blocked, remaining = self._is_auth_blocked()
+            if blocked:
+                self.logger.debug(
+                    f"[AUTH] cluster '{self.config.name}': skipping login attempt, "
+                    f"blocked for another {remaining}s ({self._auth_failures} prior failures)"
+                )
+                self.is_connected = False
+                return False
+
             # NS: clear stale IPs/disk so reconnect doesn't serve old data
             with self._ip_cache_lock:
                 self._ip_cache.clear()
@@ -708,6 +883,24 @@ class PegaProxManager:
                 _stored_token = True
                 self._using_api_token = True
                 self._api_token = f"{self.config.api_token_user}={self.config.api_token_secret}"
+
+            # MK May 2026 (#444) — track 401 across the host loop. If primary
+            # returned 401 the fallbacks will too (same creds), no point hitting
+            # each node and inflating pveproxy's failed-login counter.
+            auth_failed_401 = False
+
+            # MK May 2026 (dead-node hang) — skip hosts that timed out in the
+            # last 60s. Without this, on a 3-host cluster where the primary
+            # went dark, every connect_to_proxmox() call (background workers,
+            # UI polls) wastes 10s on the dead primary before reaching the
+            # working fallback. If ALL hosts are recently-cold we still try
+            # them so the breaker eventually self-clears.
+            warm_hosts = [h for h in hosts_to_try if not self._host_recently_failed(h)]
+            if warm_hosts:
+                if len(warm_hosts) < len(hosts_to_try):
+                    cold = [h for h in hosts_to_try if h not in warm_hosts]
+                    self.logger.debug(f"[connect] skipping recently-cold hosts: {cold}")
+                hosts_to_try = warm_hosts
 
             for host in hosts_to_try:
                 try:
@@ -755,6 +948,8 @@ class PegaProxManager:
                             self.session = True
 
                             self.logger.info(f"Connected to Proxmox at {host} using API Token")
+                            self._reset_auth_failures()  # MK (#444)
+                            self._clear_host_failure(host)  # MK May 2026 — host is warm again
 
                             if not self.config.fallback_hosts:
                                 self._auto_discover_fallback_hosts()
@@ -820,10 +1015,17 @@ class PegaProxManager:
                             if not self.config.api_token_user:
                                 self._try_create_api_token(session, host)
 
+                            self._reset_auth_failures()  # MK (#444)
+                            self._clear_host_failure(host)  # MK May 2026 — host is warm again
                             return True
                         elif resp.status_code == 401:
-                            self.logger.warning(f"Auth failed at {host} (401)")
+                            # MK May 2026 (#444) — stale creds. Don't try fallbacks
+                            # (same user/pass → same outcome, just more failed
+                            # logins for pveproxy to count against us). Mark + bail.
+                            self.logger.warning(f"Auth failed at {host} (401) — skipping remaining hosts")
                             self.connection_error = "Authentication failed — if 2FA is enabled, use an API token (user@realm!tokenid)"
+                            auth_failed_401 = True
+                            break
                         else:
                             self.logger.warning(f"Failed to login to Proxmox at {host}: {resp.status_code}")
                             # self.logger.debug(f"Response body: {resp.text}")  # too verbose
@@ -832,21 +1034,32 @@ class PegaProxManager:
                     self.logger.warning(f"Connection timeout to {host}")
                     self.is_connected = False
                     self.connection_error = f"Timeout connecting to {host}"
+                    self._mark_host_failure(host)   # skip on next call for _host_skip_window
                 except requests.exceptions.SSLError as ssl_err:
                     # MK: separate SSL errors so the user actually knows what went wrong
                     self.logger.warning(f"SSL error connecting to {host}: {ssl_err}")
                     self.is_connected = False
                     self.connection_error = f"SSL error connecting to {host} - check certificate or try hostname instead of IP"
+                    # SSL errors are usually a config problem, not host-down — still mark
+                    # the host so we don't burn the timeout repeatedly while admin fixes it
+                    self._mark_host_failure(host)
                 except requests.exceptions.ConnectionError:
                     self.logger.warning(f"Cannot connect to {host}")
                     self.is_connected = False
                     self.connection_error = f"Cannot connect to {host}"
+                    self._mark_host_failure(host)
                 except Exception as e:
                     self.logger.warning(f"Error connecting to {host}: {e}")
                     self.is_connected = False
                     self.connection_error = str(e)
             
-            self.logger.error(f"Failed to connect to any Proxmox host (tried {len(hosts_to_try)} hosts)")
+            # MK May 2026 (#444) — if the loop exited because of a 401 (not a
+            # network failure), count it against the auth circuit breaker.
+            # Network errors don't get counted — they're not credentials-related.
+            if auth_failed_401:
+                self._register_auth_failure()
+            else:
+                self.logger.error(f"Failed to connect to any Proxmox host (tried {len(hosts_to_try)} hosts)")
             self.is_connected = False
             return False
     
@@ -972,6 +1185,28 @@ class PegaProxManager:
                 nodes = response.json()['data']
                 node_status = {}
 
+                # MK May 2026 — recovery path for the per-node circuit breaker.
+                # /api2/json/nodes is PVE's cluster-wide aggregate; Corosync
+                # propagates rejoin within 1-2s so this is the ground truth
+                # for "is the node back?". If PVE says status=online for a
+                # node we currently have blocked, clear the breaker so the
+                # very next call hits it again instead of waiting out the
+                # full backoff window. Avoids the 60s/5min/30min UI-lag-on-
+                # node-recovery that the passive backoff alone would give.
+                for n in nodes:
+                    nname = n.get('node')
+                    if not nname:
+                        continue
+                    if n.get('status') == 'online':
+                        with self._node_lock:
+                            had_block = nname in self._node_blocked_until or nname in self._node_failures
+                        if had_block:
+                            self.logger.info(
+                                f"[NODE] cluster '{self.config.name}' observed '{nname}' "
+                                f"back online via /nodes aggregate — clearing breaker"
+                            )
+                            self._reset_node_failures(nname)
+
                 # MK May 2026 (#419, SpyrosPsarras): previous version queried
                 # /cluster/resources?type=node and read netin/netout off the
                 # returned records — but those keys only exist on type=vm rows,
@@ -986,21 +1221,34 @@ class PegaProxManager:
                     node_name = node['node']
                     status_data = None
                     netio = (0, 0)  # (netin, netout) bytes/sec, fall back to 0
+
+                    # MK May 2026 — short-circuit nodes in breaker backoff so a
+                    # dead node doesn't burn the full per-node timeout × every
+                    # poll cycle. UI just sees no fresh status_data and renders
+                    # the node as offline from ha_node_status fallback.
+                    blocked, _rem = self._is_node_blocked(node_name)
+                    if blocked:
+                        return (node_name, node, None, netio)
+
                     sess = self._create_session()
                     try:
                         status_url = f"https://{host}:{self.api_port}/api2/json/nodes/{node_name}/status"
-                        sr = sess.get(status_url, timeout=10)
+                        sr = sess.get(status_url, timeout=self.per_node_timeout)
                         if sr.status_code == 200:
                             status_data = sr.json()['data']
+                            self._reset_node_failures(node_name)
+                        elif sr.status_code == 595 or sr.status_code >= 500:
+                            # 595 is PVE's "node unreachable" sentinel for proxied per-node calls
+                            self._register_node_failure(node_name)
                     except Exception:
-                        pass
+                        self._register_node_failure(node_name)
 
                     # RRD pull — only attempt if status came back (no point
                     # spending an HTTP roundtrip on a clearly-dead node).
                     if status_data is not None:
                         try:
                             rrd_url = f"https://{host}:{self.api_port}/api2/json/nodes/{node_name}/rrddata"
-                            rr = sess.get(rrd_url, params={'timeframe': 'hour', 'cf': 'AVERAGE'}, timeout=10)
+                            rr = sess.get(rrd_url, params={'timeframe': 'hour', 'cf': 'AVERAGE'}, timeout=self.per_node_timeout)
                             if rr.status_code == 200:
                                 samples = rr.json().get('data', []) or []
                                 # walk back for the most recent sample that has BOTH netin and netout
@@ -1848,6 +2096,66 @@ class PegaProxManager:
         # clean up old entries
         self._vm_migration_cooldown = {v: t for v, t in self._vm_migration_cooldown.items() if now - t < cooldown_secs}
 
+        # MK May 2026 — coexistence with PVE 9.2's CRS. Two-layer check:
+        #
+        # 1) Cluster-wide CRS toggle. PVE 9.2 stores it under
+        #    /cluster/options.crs.ha-auto-rebalance (per pve-ha-manager's
+        #    Manager.pm:update_crs_scheduler_mode). When it's off — and on
+        #    pre-9.2 the key doesn't exist at all — CRS does nothing, so
+        #    our balancer runs everything as before. This is what keeps the
+        #    "compat when CRS is off / cluster is old" promise.
+        #
+        # 2) Resource-level overrides. When CRS is on cluster-wide, PVE's
+        #    HA config defaults auto-rebalance=1 on EVERY HA resource
+        #    (Config.pm: `$d->{'auto-rebalance'} = 1 if !defined ...`). So
+        #    we treat any HA-managed VM as PVE-owned unless the resource
+        #    record explicitly carries auto-rebalance ∈ {0, false, no}.
+        #    That covers the admin who keeps cluster-CRS on but pins a
+        #    specific VM to manual placement.
+        #
+        # The two GETs are cheap and happen once per balance cycle.
+        pve_crs_managed_vmids = set()
+        cluster_crs_active = False
+        try:
+            opts_resp = self._api_get(
+                f'https://{self.host}:{self.api_port}/api2/json/cluster/options',
+                timeout=5,
+            )
+            if opts_resp.status_code == 200:
+                crs = (opts_resp.json().get('data') or {}).get('crs', {})
+                # PVE returns the crs field either as a parsed dict OR as the
+                # raw composite string ("ha-auto-rebalance=1,...") depending
+                # on PVE version and serialiser version. Handle both shapes.
+                if isinstance(crs, dict):
+                    cluster_crs_active = str(crs.get('ha-auto-rebalance', '')).lower() in ('1', 'true', 'yes')
+                elif isinstance(crs, str) and crs:
+                    for part in crs.split(','):
+                        k, _, v = part.partition('=')
+                        if k.strip() == 'ha-auto-rebalance' and v.strip().lower() in ('1', 'true', 'yes'):
+                            cluster_crs_active = True
+                            break
+        except Exception as e:
+            self.logger.debug(f"[BAL] /cluster/options probe for CRS state failed ({e}) — assuming CRS off")
+
+        if cluster_crs_active:
+            try:
+                for res in self.get_proxmox_ha_resources() or []:
+                    # Explicit opt-out from CRS: keep VM eligible for our balancer
+                    rebal = str(res.get('auto-rebalance', '')).lower()
+                    if rebal in ('0', 'false', 'no'):
+                        continue
+                    # Default-on (unset) or explicit-on → CRS owns this VM
+                    sid = res.get('sid', '')
+                    if ':' in sid:
+                        try:
+                            pve_crs_managed_vmids.add(int(sid.split(':', 1)[1]))
+                        except (ValueError, IndexError):
+                            pass
+            except Exception as e:
+                self.logger.debug(f"[BAL] HA-resource probe failed ({e}) — running balancer without CRS filter")
+        else:
+            self.logger.debug("[BAL] cluster CRS not active — balancer runs full set (compat path)")
+
         candidates = [
             vm for vm in vms
             if vm.get('node') == source_node and
@@ -1856,13 +2164,21 @@ class PegaProxManager:
             vm.get('vmid') not in excluded_vmids and  # MK: Skip excluded VMs
             vm.get('vmid') not in exclude_vmids and  # LW: Skip already-migrated VMs this cycle
             vm.get('pool', '') not in excluded_pools and  # NS: Skip VMs in excluded pools
-            vm.get('vmid') not in cooled_vmids  # NS: Skip recently migrated VMs
+            vm.get('vmid') not in cooled_vmids and  # NS: Skip recently migrated VMs
+            vm.get('vmid') not in pve_crs_managed_vmids  # MK: PVE CRS owns these (9.2+)
         ]
-        
+
         # Log if any VMs were excluded
         excluded_on_node = [vm for vm in vms if vm.get('node') == source_node and vm.get('vmid') in excluded_vmids]
         if excluded_on_node:
             self.logger.info(f"Skipping {len(excluded_on_node)} excluded VM(s) on {source_node}: {[vm.get('vmid') for vm in excluded_on_node]}")
+
+        crs_on_node = [vm for vm in vms if vm.get('node') == source_node and vm.get('vmid') in pve_crs_managed_vmids]
+        if crs_on_node:
+            self.logger.info(
+                f"Skipping {len(crs_on_node)} VM(s) on {source_node} owned by PVE CRS auto-rebalance: "
+                f"{[vm.get('vmid') for vm in crs_on_node]} (PVE will place them — opt out per VM via auto-rebalance=0 to give us back control)"
+            )
         
         # Filter out containers if balance_containers is disabled
         # NS: include_containers override allows cross-cluster LB to use group-level setting
@@ -6720,33 +7036,58 @@ echo "AGENT_INSTALLED_OK"
             self.logger.error(f"Error getting Proxmox HA groups: {e}")
             return []
     
-    def add_vm_to_proxmox_ha(self, vmid: int, vm_type: str = 'vm', group: str = None, 
+    def add_vm_to_proxmox_ha(self, vmid: int, vm_type: str = 'vm', group: str = None,
                              max_restart: int = 1, max_relocate: int = 1, state: str = 'started',
-                             comment: str = None) -> Dict:
-        """add VM/CT to Proxmox native HA with restart/relocate limits"""
+                             comment: str = None, auto_rebalance=None) -> Dict:
+        """add VM/CT to Proxmox native HA with restart/relocate limits.
+
+        MK May 2026 (PVE 9.2) — auto_rebalance is the per-resource opt-out for
+        dynamic CRS rebalancing. Accept None (don't send), True/1, or False/0.
+        Stripped for pre-9.2 clusters.
+
+        Also: PVE 9.2 retired the `group` resource property — groups migrated
+        to the rules engine, so passing `group=...` returns
+        500 "invalid parameter 'group': ha groups have been migrated to rules".
+        We drop the legacy field on 9.2+ and rely on the caller having set up
+        an equivalent node-affinity rule via /cluster/ha/rules.
+        """
         if not self.is_connected:
             if not self.connect_to_proxmox():
                 return {'success': False, 'error': 'Not connected'}
-        
+
         try:
             host = self.host
             url = f"https://{host}:{self.api_port}/api2/json/cluster/ha/resources"
-            
+
             # sid format: vm:100 or ct:100
             sid = f"{vm_type}:{vmid}"
-            
+
             data = {
                 'sid': sid,
                 'max_restart': max_restart,
                 'max_relocate': max_relocate,
                 'state': state or 'started'
             }
-            
+
+            pve_ver = self.get_pve_version_tuple()
+            ha_supports_groups = (pve_ver is None or pve_ver < (9, 2))
+
             if group:
-                data['group'] = group
+                if ha_supports_groups:
+                    data['group'] = group
+                else:
+                    self.logger.info(
+                        f"[HA] dropping legacy 'group={group}' for PVE {pve_ver} — "
+                        f"groups migrated to /cluster/ha/rules; create a node-affinity rule instead"
+                    )
             if comment:
                 data['comment'] = comment
-            
+            if auto_rebalance is not None and not ha_supports_groups:
+                # auto-rebalance only exists on 9.2+; ha_supports_groups inverse = 9.2+
+                data['auto-rebalance'] = 1 if auto_rebalance else 0
+            elif auto_rebalance is not None:
+                self.logger.debug(f"[HA] auto-rebalance skipped (PVE {pve_ver} < 9.2)")
+
             response = self._api_post(url, data=data)
             
             if response.status_code == 200:
@@ -6787,17 +7128,37 @@ echo "AGENT_INSTALLED_OK"
             return {'success': False, 'error': str(e)}
     
     def _get_node_ip(self, node_name: str) -> Optional[str]:
+        """Thin wrapper around _get_node_ip_impl that gates on the per-node
+        circuit breaker (skip lookups for known-dead nodes) and feeds the
+        breaker on the result (None → register failure, IP → reset).
+        """
+        blocked, remaining = self._is_node_blocked(node_name)
+        if blocked:
+            self.logger.debug(
+                f"[NodeIP] '{node_name}' is in circuit-breaker backoff "
+                f"({remaining}s remaining), returning None without probing"
+            )
+            return None
+
+        ip = self._get_node_ip_impl(node_name)
+        if ip:
+            self._reset_node_failures(node_name)
+        else:
+            self._register_node_failure(node_name)
+        return ip
+
+    def _get_node_ip_impl(self, node_name: str) -> Optional[str]:
         """Get the best REACHABLE management IP address for a node.
-        
+
         NS: Feb 2026 - Fixed for VLAN setups (vmbr0 / vmbr0.10 / vmbr0.510):
-        
+
         Works for ANY management interface:
           - vmbr0         (flat, no VLAN)
           - vmbr0.10      (VLAN 10)
           - vmbr0.510     (VLAN 510)
           - vmbr1.100     (second bridge, VLAN 100)
           - bond0 / eno1  (direct interface, no bridge)
-        
+
         Strategy:
         1. Query the CURRENT/PRIMARY node to find which interface has the mgmt IP
         2. On the TARGET node, find the IP on the SAME interface name (vmbr0.10 -> vmbr0.10)
@@ -6807,11 +7168,11 @@ echo "AGENT_INSTALLED_OK"
         """
         try:
             import ipaddress, socket
-            
+
             if not self.is_connected:
                 if not self.connect_to_proxmox():
                     return None
-            
+
             host = self.host
             primary_ip = self.config.host
 
@@ -7684,10 +8045,18 @@ echo "AGENT_INSTALLED_OK"
                 url = f"https://{self.host}:{self.api_port}/api2/json/nodes/{node}/lxc/{vmid}/clone"
             
             data = {'newid': newid}
-            
+
+            # MK May 2026 (#448 @DarmokNoob) — PVE LXC clone schema doesn't
+            # accept `name=`, it wants `hostname=` (verified via pvesh).
+            # QEMU clone schema is the other way around. The xcrepl + repl
+            # paths in api/vms.py have the same bug fixed in the same commit;
+            # this is the manual-clone-from-UI path.
             if name:
-                data['name'] = name
-            
+                if vm_type == 'lxc':
+                    data['hostname'] = name
+                else:
+                    data['name'] = name
+
             if full:
                 data['full'] = 1
             else:
@@ -8415,13 +8784,25 @@ echo "AGENT_INSTALLED_OK"
             data['rootfs'] = f"{storage}:{disk_size}"
             
             # MK: Additional Mount Points
+            # NS May 2026 (PVE 9.2) — mountpoints gained idmap=<map> and
+            # keepattrs=1 sub-options. Both are optional in our request
+            # dict; we only emit them when the caller set them, so older
+            # clusters that don't know the keys aren't surprised.
+            pve_ver = self.get_pve_version_tuple()
+            mp_supports_92 = (pve_ver is None or pve_ver >= (9, 2))
             additional_disks = ct_config.get('additional_disks', [])
             for idx, mp in enumerate(additional_disks):
                 mp_storage = mp.get('storage', storage)
                 mp_size = str(mp.get('size', '8')).replace('G', '').replace('g', '')
                 mp_path = mp.get('path', f'/mnt/data{idx}')
-                # Format: storage:size,mp=/path
-                data[f'mp{idx}'] = f"{mp_storage}:{mp_size},mp={mp_path}"
+                # Format: storage:size,mp=/path[,idmap=...][,keepattrs=1]
+                parts = [f"{mp_storage}:{mp_size}", f"mp={mp_path}"]
+                if mp_supports_92:
+                    if mp.get('idmap'):
+                        parts.append(f"idmap={mp['idmap']}")
+                    if mp.get('keepattrs'):
+                        parts.append('keepattrs=1')
+                data[f'mp{idx}'] = ','.join(parts)
             
             # Network configuration
             # NS: this networking stuff is confusing, proxmox docs are not great
@@ -11543,26 +11924,117 @@ echo "AGENT_INSTALLED_OK"
             self.logger.error(f"[ERROR] Toggle network link failed: {e}")
             return {'success': False, 'error': str(e)}
     
+    # NS May 2026 — PVE 9.2 added /cluster/cpu-models for admin-defined custom
+    # CPU profiles (see manager.cluster.cpu-models in pve-manager 9.2). We try
+    # to fetch + append on connect; on older clusters the endpoint 404s and
+    # the static list is returned unchanged.
+    _STATIC_CPU_TYPES = [
+        'host', 'kvm64', 'kvm32', 'qemu64', 'qemu32',
+        'max', 'x86-64-v2', 'x86-64-v2-AES', 'x86-64-v3', 'x86-64-v4',
+        'Broadwell', 'Broadwell-IBRS', 'Broadwell-noTSX', 'Broadwell-noTSX-IBRS',
+        'Cascadelake-Server', 'Cascadelake-Server-noTSX', 'Cascadelake-Server-v2',
+        'Conroe', 'Cooperlake', 'Cooperlake-v2',
+        'EPYC', 'EPYC-IBPB', 'EPYC-Milan', 'EPYC-Rome', 'EPYC-v3',
+        'Haswell', 'Haswell-IBRS', 'Haswell-noTSX', 'Haswell-noTSX-IBRS',
+        'Icelake-Client', 'Icelake-Client-noTSX', 'Icelake-Server', 'Icelake-Server-noTSX',
+        'IvyBridge', 'IvyBridge-IBRS',
+        'Nehalem', 'Nehalem-IBRS',
+        'Opteron_G1', 'Opteron_G2', 'Opteron_G3', 'Opteron_G4', 'Opteron_G5',
+        'Penryn', 'SandyBridge', 'SandyBridge-IBRS',
+        'SapphireRapids', 'Skylake-Client', 'Skylake-Client-IBRS',
+        'Skylake-Server', 'Skylake-Server-IBRS', 'Skylake-Server-noTSX-IBRS',
+        'Westmere', 'Westmere-IBRS', 'athlon', 'core2duo', 'coreduo',
+        'n270', 'pentium', 'pentium2', 'pentium3', 'phenom'
+    ]
+
     def get_cpu_types(self) -> List[str]:
-        
-        return [
-            'host', 'kvm64', 'kvm32', 'qemu64', 'qemu32', 
-            'max', 'x86-64-v2', 'x86-64-v2-AES', 'x86-64-v3', 'x86-64-v4',
-            'Broadwell', 'Broadwell-IBRS', 'Broadwell-noTSX', 'Broadwell-noTSX-IBRS',
-            'Cascadelake-Server', 'Cascadelake-Server-noTSX', 'Cascadelake-Server-v2',
-            'Conroe', 'Cooperlake', 'Cooperlake-v2',
-            'EPYC', 'EPYC-IBPB', 'EPYC-Milan', 'EPYC-Rome', 'EPYC-v3',
-            'Haswell', 'Haswell-IBRS', 'Haswell-noTSX', 'Haswell-noTSX-IBRS',
-            'Icelake-Client', 'Icelake-Client-noTSX', 'Icelake-Server', 'Icelake-Server-noTSX',
-            'IvyBridge', 'IvyBridge-IBRS',
-            'Nehalem', 'Nehalem-IBRS',
-            'Opteron_G1', 'Opteron_G2', 'Opteron_G3', 'Opteron_G4', 'Opteron_G5',
-            'Penryn', 'SandyBridge', 'SandyBridge-IBRS',
-            'SapphireRapids', 'Skylake-Client', 'Skylake-Client-IBRS', 
-            'Skylake-Server', 'Skylake-Server-IBRS', 'Skylake-Server-noTSX-IBRS',
-            'Westmere', 'Westmere-IBRS', 'athlon', 'core2duo', 'coreduo',
-            'n270', 'pentium', 'pentium2', 'pentium3', 'phenom'
-        ]
+        """Returns the list of CPU model names PegaProx offers in the VM create
+        form. Strategy:
+          1) Live fetch from /nodes/{n}/capabilities/qemu/cpu on the first
+             reachable online node. This endpoint has existed since PVE 7.x
+             and is architecture-aware (the node's host arch restricts what
+             shows up — e.g. EPYC entries only on AMD nodes). Returns rows
+             with {name, vendor, custom} — we keep names verbatim, including
+             custom-* models the admin defined.
+          2) Fall back to the static 61-entry list on any error or when no
+             node is reachable. Same shape that PegaProx has been returning
+             since forever, so callers don't see breakage.
+
+        MK May 2026 — was hardcoded to the static list; replaced with the live
+        endpoint after we confirmed via live probe on PVE 9.2.2 that
+        /cluster/cpu-models (the supposed 9.2 endpoint per the early research)
+        does not exist. The per-node capabilities endpoint is the right place.
+        """
+        live = self._fetch_pve_cpu_types()
+        if live:
+            return live
+        return list(self._STATIC_CPU_TYPES)
+
+    def _fetch_pve_cpu_types(self) -> List[str]:
+        """GET /nodes/{n}/capabilities/qemu/cpu on the first online node. Returns
+        a list of name strings (PVE shape: [{name, vendor, custom}, ...]).
+        Empty list on error so the caller falls back to the static list."""
+        try:
+            nodes_url = f"https://{self.host}:{self.api_port}/api2/json/nodes"
+            nresp = self._create_session().get(nodes_url, timeout=self.per_node_timeout)
+            if nresp.status_code != 200:
+                return []
+            nodes = nresp.json().get('data') or []
+            online = next(
+                (n.get('node') for n in nodes
+                 if n.get('node') and n.get('status') == 'online'
+                 and not self._is_node_blocked(n.get('node'))[0]),
+                None,
+            )
+            if not online:
+                return []
+            cpu_url = f"https://{self.host}:{self.api_port}/api2/json/nodes/{online}/capabilities/qemu/cpu"
+            r = self._create_session().get(cpu_url, timeout=self.per_node_timeout)
+            if r.status_code != 200:
+                return []
+            data = r.json().get('data') or []
+            # Dedupe + keep PVE's order (which is sensible: x86-64-v2 first, then
+            # named profiles, then custom-* last). Empty names skipped defensively.
+            seen = set()
+            out = []
+            for entry in data:
+                name = entry.get('name') or ''
+                if name and name not in seen:
+                    seen.add(name)
+                    out.append(name)
+            return out
+        except Exception as e:
+            self.logger.debug(f"[CPU] live fetch failed ({e}) — falling back to static list")
+            return []
+
+    # MK May 2026 — pve version tuple cache. Used by feature-gates that decide
+    # whether to send 9.2+ -only fields. Cached on the manager instance; the
+    # cluster gets reconnected if the version changes anyway.
+    def get_pve_version_tuple(self):
+        """Returns (major, minor) tuple from /api2/json/version, e.g. (9, 2). None on error."""
+        cached = getattr(self, '_pve_version_cache', None)
+        if cached is not None:
+            return cached
+        try:
+            url = f"https://{self.host}:{self.api_port}/api2/json/version"
+            resp = self._create_session().get(url, timeout=5)
+            if resp.status_code != 200:
+                self._pve_version_cache = None
+                return None
+            data = resp.json().get('data') or {}
+            ver = str(data.get('release') or data.get('version') or '')
+            # release shapes: "9.2-1", "9.2.0", "9.1-13"
+            import re
+            m = re.match(r'(\d+)[.\-](\d+)', ver)
+            if not m:
+                self._pve_version_cache = None
+                return None
+            tup = (int(m.group(1)), int(m.group(2)))
+            self._pve_version_cache = tup
+            return tup
+        except Exception:
+            self._pve_version_cache = None
+            return None
     
     def get_scsi_controllers(self) -> List[Dict]:
         
@@ -14262,10 +14734,17 @@ echo DONE""",
         """Stop the PegaProx daemon"""
         if not self.running:
             return
-        
+
         # Stop HA monitor
         self.stop_ha_monitor()
-        
+
+        # MK May 2026 (#444) — when this manager is being swapped out (e.g. via
+        # reconfigure), block any straggler in-flight task from triggering a
+        # re-login on the way out. Whatever creds we hold are about to be
+        # replaced; we don't want orphan workers spamming pveproxy.
+        with self._auth_failure_lock:
+            self._auth_blocked_until = float('inf')
+
         self.stop_event.set()
         if self.thread:
             self.thread.join(timeout=5)
