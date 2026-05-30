@@ -702,6 +702,8 @@ jobs:
         run: |
           qemu-img convert -O qcow2 -c pegaprox.qcow2 \
             "pegaprox-${{ needs.prepare.outputs.version }}-vm-amd64.qcow2"
+          cp "pegaprox-${{ needs.prepare.outputs.version }}-vm-amd64.qcow2" \
+             "pegaprox-vm-amd64.qcow2"
 
       - name: Artefakt sichern
         uses: actions/upload-artifact@v4
