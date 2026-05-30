@@ -698,6 +698,7 @@
                 showing: 'Zeige',
                 perPage: 'Pro Seite',
                 loadingDatacenter: 'Lade Datacenter Daten...',
+                subscriptions: 'Subscriptions',
 
                 // Cluster
                 clusters: 'Cluster',
@@ -4604,6 +4605,7 @@
                 showing: 'Showing',
                 perPage: 'Per page',
                 loadingDatacenter: 'Loading datacenter data...',
+                subscriptions: 'Subscriptions',
 
                 // Cluster
                 clusters: 'Clusters',
