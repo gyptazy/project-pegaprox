@@ -253,15 +253,23 @@ jobs:
           sudo apt-get install -y \
             libguestfs-tools qemu-system-x86 qemu-utils \
             cloud-image-utils curl \
-            passt linux-image-virtual
+            libvirt-daemon-system libvirt-clients linux-image-virtual
           # NS: libguestfs direct-backend liest /boot/vmlinuz-$(uname -r) um
           # die supermin appliance zu bauen — Noble shipped das 0600
           # root:root, dem nicht-root runner-user fliegt's um die Ohren.
           sudo chmod 0644 /boot/vmlinuz-* || true
-          # NS: nur diagnostisch — surfaced backend-/appliance-Probleme im
-          # Job-Log, ohne den Step zu killen. Hilft beim nächsten passt-/
-          # supermin-Regress.
-          sudo libguestfs-test-tool 2>&1 | tail -20 || true
+          # NS 2026-05-31: direct-backend geht über passt fürs Guest-Net,
+          # was auf den hosted runnern mit 'passt exited with status 1'
+          # stirbt (kernel-capabilities / user-namespaces fehlen).
+          # libvirt-backend nutzt libvirtd's eigenes Netz (default-Bridge
+          # via dnsmasq) — umgeht den ganzen passt-Pfad. libvirtd starten
+          # damit der Socket da ist wenn virt-customize ranzappelt.
+          sudo systemctl enable --now libvirtd
+          sudo virsh net-start default 2>/dev/null || true
+          sudo virsh net-autostart default 2>/dev/null || true
+          # Diagnostic — surface backend-/appliance-Probleme, ohne den Step
+          # zu killen.
+          sudo LIBGUESTFS_BACKEND=libvirt libguestfs-test-tool 2>&1 | tail -25 || true
 
       - name: Debian Cloud-Image laden + Checksum verifizieren
         run: |
@@ -298,7 +306,7 @@ jobs:
 
       - name: PegaProx ins Image installieren
         env:
-          LIBGUESTFS_BACKEND: direct
+          LIBGUESTFS_BACKEND: libvirt
           APTVER: ${{ needs.prepare.outputs.aptver }}
         run: |
           sudo -E virt-customize -a pegaprox.qcow2 \
@@ -357,80 +365,15 @@ jobs:
           retention-days: 7
 
   # ----------------------------------------------------------------------
-  # 4) OPTIONAL: Echtes vzdump-Backup auf self-hosted Proxmox-Node
-  #    Aktiviert sich nur, wenn ein Runner mit Label 'proxmox' existiert.
+  # 4) Alles an den Release anhängen (nur bei echtem Release-Event)
   # ----------------------------------------------------------------------
-  build-vzdump:
-    needs: [prepare, build-vm]
-    runs-on: [self-hosted, proxmox]
-    # Falls kein solcher Runner da ist, läuft der Job einfach nicht an.
-    continue-on-error: true
-    steps:
-      - name: VM-qcow2 holen
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: vm-image
-          path: .
-
-      - name: VM importieren, testen und als vzdump exportieren
-        env:
-          VMID: "9000"            # freie Test-VMID auf der Node
-          STORAGE: "local-lvm"    # Ziel-Storage für die Disk
-          DUMP_STORAGE: "local"   # Storage mit 'Backup'-Content für vzdump
-        run: |
-          set -e
-          QCOW="$(ls pegaprox-*-vm-amd64.qcow2 | head -n1)"
-          VER="${{ needs.prepare.outputs.version }}"
-
-          # Aufräumen, falls Test-VMID belegt
-          qm stop "$VMID" 2>/dev/null || true
-          qm destroy "$VMID" --purge 2>/dev/null || true
-
-          # VM anlegen + Disk importieren
-          qm create "$VMID" --name "pegaprox-build-$VER" \
-            --memory 2048 --cores 2 --net0 virtio,bridge=vmbr0 \
-            --scsihw virtio-scsi-single --ostype l26 --agent 1
-          qm importdisk "$VMID" "$QCOW" "$STORAGE"
-          qm set "$VMID" --scsi0 "${STORAGE}:vm-${VMID}-disk-0"
-          qm set "$VMID" --boot order=scsi0
-          qm set "$VMID" --ciuser pegaprox --cipassword pegaprox --ipconfig0 ip=dhcp
-          qm set "$VMID" --ide2 "${STORAGE}:cloudinit"
-
-          # Boot-Test
-          qm start "$VMID"
-          echo "Warte auf Guest-Agent / Boot..."
-          OK=0
-          for i in $(seq 1 60); do
-            if qm guest cmd "$VMID" ping >/dev/null 2>&1; then OK=1; break; fi
-            sleep 5
-          done
-          [ "$OK" -eq 1 ] || { echo "::error::vzdump-VM bootete nicht"; qm stop "$VMID" || true; exit 1; }
-
-          # Sauber herunterfahren und vzdump erzeugen
-          qm shutdown "$VMID" --timeout 120 || qm stop "$VMID"
-          vzdump "$VMID" --storage "$DUMP_STORAGE" --mode stop --compress zstd
-
-          # Neuestes Backup-File finden und umbenennen
-          DUMP_DIR="/var/lib/vz/dump"
-          LATEST="$(ls -t ${DUMP_DIR}/vzdump-qemu-${VMID}-*.vma.zst | head -n1)"
-          cp "$LATEST" "pegaprox-${VER}-vzdump.vma.zst"
-
-          # Test-VM entfernen
-          qm destroy "$VMID" --purge
-
-      - name: vzdump sichern
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: vzdump-backup
-          path: pegaprox-*-vzdump.vma.zst
-          retention-days: 7
-
-  # ----------------------------------------------------------------------
-  # 5) Alles an den Release anhängen (nur bei echtem Release-Event)
-  # ----------------------------------------------------------------------
+  # NS 2026-05-31 — vzdump-Job rausgenommen. Der self-hosted Proxmox-
+  # Runner ist seit Wochen offline und der Job hat eh nur als
+  # continue-on-error mitgelaufen; .vma.zst war nie reproduzierbar
+  # Teil eines Release-Assets. Falls wir das wiederbeleben wollen,
+  # gibt's den alten Block in git history (release-images.yml@01ff32e^).
   publish:
-    needs: [prepare, build-lxc, build-vm, build-vzdump]
-    # vzdump ist optional -> nicht blockieren, wenn der Job übersprungen wurde
+    needs: [prepare, build-lxc, build-vm]
     if: ${{ always() && github.event_name == 'release' && needs.build-lxc.result == 'success' && needs.build-vm.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
@@ -441,7 +384,7 @@ jobs:
       - name: Checksums erzeugen
         run: |
           cd dist
-          find . -type f \( -name '*.qcow2' -o -name '*.tar.xz' -o -name '*.vma.zst' \) \
+          find . -type f \( -name '*.qcow2' -o -name '*.tar.xz' \) \
             -exec sha256sum {} \; > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
@@ -452,5 +395,4 @@ jobs:
           files: |
             dist/**/*.qcow2
             dist/**/*.tar.xz
-            dist/**/*.vma.zst
             dist/SHA256SUMS.txt
