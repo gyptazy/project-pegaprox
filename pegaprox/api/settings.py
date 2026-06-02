@@ -494,7 +494,11 @@ def perform_pegaprox_update():
                 if not content_dir:
                     raise RuntimeError("Archive missing pegaprox_multi_cluster.py")
 
-                # Walk archive and copy, skip protected paths + junk
+                # Walk archive and copy, skip protected paths + junk.
+                # MK 2026-06-02: per-file try/except so one failed write
+                # (permission, disk full, ENOSPC) doesn't kill the whole
+                # archive copy. Real failures land in failed_files and
+                # surface in the audit log + response payload.
                 for root, dirs, files in os.walk(content_dir):
                     dirs[:] = [d for d in dirs if d not in ('__pycache__', '.git', 'venv', 'node_modules')]
 
@@ -510,12 +514,16 @@ def perform_pegaprox_update():
                             continue
 
                         dst = os.path.join(install_dir, rel_path)
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        shutil.copy2(os.path.join(root, fname), dst)
-                        downloaded_files.append(rel_path)
+                        try:
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            shutil.copy2(os.path.join(root, fname), dst)
+                            downloaded_files.append(rel_path)
+                        except Exception as copy_err:
+                            failed_files.append((rel_path, str(copy_err)[:200]))
+                            logging.warning(f"[update] copy failed for {rel_path}: {copy_err}")
 
             update_method = 'archive'
-            logging.info(f"Archive update: {len(downloaded_files)} files installed")
+            logging.info(f"Archive update: {len(downloaded_files)} files installed, {len(failed_files)} failed")
 
         except Exception as archive_err:
             logging.warning(f"Archive download failed ({archive_err}), trying individual files...")
@@ -572,8 +580,14 @@ def perform_pegaprox_update():
 
                 dst = os.path.join(install_dir, remote_path)
 
-                # try GitHub first, then mirror
+                # try GitHub first, then mirror.
+                # MK 2026-06-02: bare `except: continue` here used to swallow
+                # every permission / disk-full / broken-pipe error silently.
+                # Now we capture the last-error so it lands in failed_files
+                # below if neither GitHub nor mirror succeeded.
                 downloaded = False
+                last_err = None
+                got_404 = False
                 for base_url in [GITHUB_RAW_URL, MIRROR_RAW_URL]:
                     try:
                         resp = requests.get(f"{base_url}/{remote_path}", timeout=60)
@@ -587,13 +601,17 @@ def perform_pegaprox_update():
                             downloaded = True
                             break
                         elif resp.status_code == 404:
+                            got_404 = True
                             break  # file doesn't exist, skip
-                    except:
+                        else:
+                            last_err = f"HTTP {resp.status_code}"
+                    except Exception as e:
+                        last_err = str(e)[:200]
                         continue
 
-                if not downloaded and remote_path not in [f[0] for f in failed_files]:
-                    # only log as failed if it wasn't a 404
-                    pass
+                if not downloaded and not got_404:
+                    # write- or network-error, not a missing-file 404 — record it
+                    failed_files.append((remote_path, last_err or 'unknown'))
 
             update_method = 'individual'
             logging.info(f"Individual update: {len(downloaded_files)} files, {len(failed_files)} failed")
@@ -663,8 +681,15 @@ def perform_pegaprox_update():
             except Exception as e:
                 pip_result = f"error: {str(e)}"
 
-        log_audit(user, 'pegaprox.update_completed',
-                  f"Updated to {new_version} via {update_method}, {len(downloaded_files)} files")
+        # MK 2026-06-02: include real failure count in the audit line so post-
+        # update reports surface "247 ok / 3 failed" instead of just "247 files"
+        # while a handful silently stayed on the old version.
+        audit_detail = f"Updated to {new_version} via {update_method}, {len(downloaded_files)} files"
+        if failed_files:
+            audit_detail += f", {len(failed_files)} failed: {', '.join(f[0] for f in failed_files[:5])}"
+            if len(failed_files) > 5:
+                audit_detail += f" (+{len(failed_files) - 5} more)"
+        log_audit(user, 'pegaprox.update_completed', audit_detail)
 
         # Schedule restart
         restart_delay = 3
@@ -704,9 +729,20 @@ def perform_pegaprox_update():
 
         threading.Thread(target=restart_server, daemon=True).start()
 
+        # MK 2026-06-02: surface partial-success in the response so the UI can
+        # show a warning instead of a green check when N files failed to write.
+        # Before this, files_failed was always [] (the variable was never
+        # appended to in the fallback path and the primary path had no
+        # try/except at all), so 'success: true' meant "we tried" not
+        # "everything landed". Now it actually reflects reality.
+        partial = len(failed_files) > 0
         return jsonify({
             'success': True,
-            'message': f'Update to {new_version} complete! Restarting in {restart_delay}s...',
+            'partial': partial,
+            'message': (f'Update to {new_version} complete! Restarting in {restart_delay}s...'
+                        if not partial else
+                        f'Update to {new_version} partially applied — '
+                        f'{len(failed_files)} file(s) failed to write. Restarting in {restart_delay}s...'),
             'updated_version': new_version,
             'update_method': update_method,
             'backup_path': backup_path,
