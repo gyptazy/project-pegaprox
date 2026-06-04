@@ -2722,13 +2722,17 @@ def _scsi_controller_args(pve_mgr, node, vmid, disk_bus):
     return f"-device {qemu_dev},id=scsihw0 "
 
 
-def _pvesm_alloc_disk(pve_mgr, node, storage, vmid, disk_index, size_bytes):
+def _pvesm_alloc_disk(pve_mgr, node, storage, vmid, disk_index, size_bytes, errbuf=None):
     """Robustly allocate a disk via pvesm alloc.
-    
-    Handles all storage types (LVM-thin, ZFS, Dir, Ceph, NFS) and 
+
+    Handles all storage types (LVM-thin, ZFS, Dir, Ceph, NFS) and
     various Proxmox versions by trying multiple command formats.
-    
-    Returns (vol_id, dev_path) or (None, None) on failure.
+
+    Returns (vol_id, dev_path) or (None, None) on failure. If `errbuf` is a
+    list, the actual pvesm error from the last failed attempt is appended on
+    failure — MK 2026-06-04 (#529): it used to land only in the server log via
+    logging.error, so the migration task log said "allocation failed" with no
+    reason. Pass errbuf to surface the real cause to the user.
     """
     import re, math
     
@@ -2834,6 +2838,8 @@ def _pvesm_alloc_disk(pve_mgr, node, storage, vmid, disk_index, size_bytes):
                 if derived:
                     logging.info(f"[V2P] Using derived path: {derived}")
                     return vol_id, derived
+                if errbuf is not None:
+                    errbuf.append(f"alloc succeeded ({vol_id}) but volume path could not be resolved")
                 return None, None
         else:
             last_error = out_str[:150]
@@ -2864,6 +2870,8 @@ def _pvesm_alloc_disk(pve_mgr, node, storage, vmid, disk_index, size_bytes):
         logging.debug(f"[V2P] API alloc failed: {e}")
     
     logging.error(f"[V2P] All allocation methods failed for disk {disk_index} on {storage}. Last: {last_error}")
+    if errbuf is not None:
+        errbuf.append(last_error or 'all pvesm alloc attempts + REST API failed (no error text captured)')
     return None, None
 
 
@@ -3296,18 +3304,20 @@ def _qemu_img_ssh_copy(pve_mgr, task, esxi_host, esxi_user, key_path,
         task.log(f"Disk {di}: {flat_file} ({disk_gb:.1f} GB)")
         
         # Allocate volume using robust helper
-        vol_id, dev_path = _pvesm_alloc_disk(pve_mgr, task.target_node, 
-            task.target_storage, task.proxmox_vmid, di, disk_total)
-        
+        _alloc_err = []
+        vol_id, dev_path = _pvesm_alloc_disk(pve_mgr, task.target_node,
+            task.target_storage, task.proxmox_vmid, di, disk_total, errbuf=_alloc_err)
+
         task.log(f"  Target: {vol_id} → {dev_path}")
         if not vol_id or not dev_path:
-            # NS Mar 2026 - #132: surface the actual pvesm error so user can debug
-            rc_dbg, out_dbg, _ = _pve_node_exec(pve_mgr, task.target_node,
-                f"pvesm alloc {shlex.quote(task.target_storage)} {task.proxmox_vmid} vm-{task.proxmox_vmid}-disk-{di} 1G 2>&1",
-                timeout=10)
+            # NS Mar 2026 - #132: surface the actual pvesm error so user can debug.
+            # MK 2026-06-04 (#529): use the real last_error from the helper instead
+            # of a throwaway 1G re-probe (which had its own side effect + could
+            # succeed where the real-size alloc failed, masking the cause).
             task.log(f"  Disk allocation failed for disk {di}")
             task.log(f"  Storage: {task.target_storage}, VMID: {task.proxmox_vmid}")
-            task.log(f"  pvesm error: {str(out_dbg or '').strip()[:200]}")
+            if _alloc_err and _alloc_err[0]:
+                task.log(f"  Reason: {_alloc_err[0]}")
             _cleanup_copy_isolation(pve_mgr, task.target_node, iso)
             return False
         
@@ -5455,13 +5465,17 @@ def _ssh_pipe_transfer(pve_mgr, task, esxi_host, esxi_user, esxi_pass, datastore
     task.log(f"  Datastore: {ds_name}")
     
     # 3. Allocate raw volume on Proxmox using robust helper
+    _alloc_err = []
     vol_id, vol_path = _pvesm_alloc_disk(pve_mgr, task.target_node,
-        task.target_storage, task.proxmox_vmid, disk_index, flat_size)
+        task.target_storage, task.proxmox_vmid, disk_index, flat_size, errbuf=_alloc_err)
     if not vol_id or not vol_path:
-        # surface pvesm error for debugging (#132)
+        # surface pvesm error for debugging (#132, #529)
         rc_dbg, out_dbg, _ = _pve_node_exec(pve_mgr, task.target_node,
             f"pvesm status --storage {shlex.quote(task.target_storage)} 2>&1", timeout=10)
         task.log(f"  Disk allocation failed for disk {disk_index}")
+        # #529: the real reason from pvesm alloc, not just storage health
+        if _alloc_err and _alloc_err[0]:
+            task.log(f"  Reason: {_alloc_err[0]}")
         task.log(f"  Storage: {task.target_storage} | pvesm: {str(out_dbg or '').strip()[:200]}")
         return None, None
     task.log(f"  Allocated: {vol_id}")
