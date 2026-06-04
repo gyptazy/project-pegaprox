@@ -7852,6 +7852,9 @@ async def ssh_handler(websocket):
 
         headers = {'X-Session-ID': session_id} if session_id else {}
         cookies = {'session': session_id} if session_id else {}
+        # nosec B501 — localhost-to-PegaProx (PEGAPROX_URL = 127.0.0.1:port) with our
+        # own self-signed cert. Same-host trust boundary; attacker with local
+        # cert-read access already has more direct attack paths. MK 2026-06-04.
         r = requests.get(validate_url, cookies=cookies, headers=headers, timeout=8, verify=False)
 
         if r.status_code == 403:
@@ -7881,6 +7884,7 @@ async def ssh_handler(websocket):
         if not ws_token and session_id:
             try:
                 print(f"Fetching cluster creds from: {PEGAPROX_URL}/api/internal/cluster-creds/{cluster_id}")
+                # nosec B501 — same-host PegaProx self-signed cert, see MK 2026-06-04 audit
                 rc = requests.get(f"{PEGAPROX_URL}/api/internal/cluster-creds/{cluster_id}",
                                   cookies={'session': session_id}, timeout=10, verify=False)
                 if rc.status_code == 200:
@@ -8123,6 +8127,9 @@ async def termproxy_handler(client_ws, query, m_term, ws_token, session_id):
             validate_url = f"{PEGAPROX_URL}/api/auth/validate"
         headers = {'X-Session-ID': session_id} if session_id else {}
         cookies = {'session': session_id} if session_id else {}
+        # nosec B501 — localhost-to-PegaProx (PEGAPROX_URL = 127.0.0.1:port) with our
+        # own self-signed cert. Same-host trust boundary; attacker with local
+        # cert-read access already has more direct attack paths. MK 2026-06-04.
         r = requests.get(validate_url, cookies=cookies, headers=headers, timeout=8, verify=False)
         if r.status_code == 403:
             await client_ws.send(json.dumps({'status': 'error', 'message': f'No access to cluster {cluster_id}'}))
@@ -8168,15 +8175,23 @@ async def termproxy_handler(client_ws, query, m_term, ws_token, session_id):
     if ctx.get('host'):
         allowed_hosts.add(ctx['host'])
     allowed_hosts.update(v for v in (ctx.get('node_ips') or {}).values() if v)
+    # MK 2026-06-04: pull per-cluster ssl_verify out of the same context for
+    # the PVE wss-proxy below. Defaults to False because PVE ships self-signed
+    # certs and most labs run them. Admins toggle on once they've installed
+    # a real cert + the cluster's `ssl_verify` config field is true.
+    verify_pve_tls = bool(ctx.get('verify_pve_tls', False))
     if not allowed_hosts and session_id:
         try:
             cr = requests.get(f"{PEGAPROX_URL}/api/internal/cluster-creds/{cluster_id}",
-                              cookies={'session': session_id}, timeout=10, verify=False)
+                              cookies={'session': session_id}, timeout=10, verify=False)  # nosec B501 — localhost-to-PegaProx self-signed cert; same-host trust boundary, see MK 2026-06-04 audit
             if cr.status_code == 200:
                 cr_data = cr.json() or {}
                 if cr_data.get('host'):
                     allowed_hosts.add(cr_data['host'])
                 allowed_hosts.update(v for v in (cr_data.get('node_ips') or {}).values() if v)
+                # Honour the cluster-side ssl_verify flag from the creds payload.
+                if 'verify_pve_tls' in cr_data:
+                    verify_pve_tls = bool(cr_data['verify_pve_tls'])
             else:
                 print(f"[TERMPROXY] cluster-creds non-200 ({cr.status_code}); allow-list empty")
         except Exception as e:
@@ -8195,9 +8210,17 @@ async def termproxy_handler(client_ws, query, m_term, ws_token, session_id):
     pve_path = f"/api2/json/nodes/{node}/{vm_type}/{vmid_str}/vncwebsocket?port={pve_port}&vncticket={quote_plus(pve_ticket)}"
     pve_url = f"wss://{pve_host}:8006{pve_path}"
     print(f"[TERMPROXY] connecting to PVE: {pve_url}")
+    # MK 2026-06-04: TLS verify is gated by the per-cluster ssl_verify flag
+    # (exposed via /api/internal/cluster-creds as `verify_pve_tls`). Default
+    # is False because PVE ships self-signed certs by default; admins flip
+    # it on once they have a real cert + uploaded the CA. Hard-disabling
+    # check_hostname + verify_mode used to be unconditional — now it's the
+    # opt-out path with a logged warning so cert posture is observable.
     pve_ssl = ssl.create_default_context()
-    pve_ssl.check_hostname = False
-    pve_ssl.verify_mode = ssl.CERT_NONE
+    if not verify_pve_tls:
+        pve_ssl.check_hostname = False
+        pve_ssl.verify_mode = ssl.CERT_NONE
+        print(f"[TERMPROXY] TLS verify DISABLED for PVE host {pve_host!r} (cluster ssl_verify=false)")
     try:
         pve_ws = await websockets.connect(
             pve_url,

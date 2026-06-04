@@ -1267,11 +1267,18 @@ def get_cluster_creds_internal(cluster_id):
     # NS Feb 2026: Never expose Proxmox password via API - shell proxy handles auth server-side
     # NS Mar 2026: removed user field from response, only SSH proxy needs it internally
     # NS Apr 2026: expose ssh_port so the WS server can honor non-22 configs
+    # MK 2026-06-04: expose verify_pve_tls so the SSH-WS subprocess can decide
+    # whether to disable cert/hostname verification for the PVE wss:8006/vncwebsocket
+    # proxy. Mirrors the per-cluster ssl_verify flag (default False because PVE
+    # ships self-signed certs by default; admins flip it on in cluster settings
+    # once they've installed a real cert + uploaded the CA).
     ssh_port = getattr(getattr(mgr, 'config', None), 'ssh_port', 22) or 22
+    verify_pve_tls = bool(getattr(mgr, 'ssl_verify', False))
     return jsonify({
         'host': cluster_host,
         'node_ips': node_ips,
-        'ssh_port': ssh_port
+        'ssh_port': ssh_port,
+        'verify_pve_tls': verify_pve_tls,
     })
 
 

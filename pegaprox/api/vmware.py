@@ -206,15 +206,30 @@ def diagnose_vmware_connection(vmware_id):
         'mgr_last_error': mgr.last_error,
     }
     
-    # Try fresh SOAP connection with stored credentials
+    # Try fresh SOAP connection with stored credentials.
+    # MK 2026-06-04: honour the per-cluster `ssl_verify` flag instead of
+    # hard-disabling. Default is False because ESXi/vCenter ship with
+    # self-signed certs in most labs; admins flip it on via cluster settings
+    # once they've installed a real CA-signed cert + uploaded the CA. When
+    # opt-out is in effect we log it so the cert posture is observable in
+    # the audit/SIEM forward.
     try:
         from pyVim.connect import SmartConnect
         import ssl
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        verify_tls = bool(getattr(mgr, 'ssl_verify', False))
+        if verify_tls:
+            ctx = ssl.create_default_context()
+        else:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            logging.warning(
+                f"[VMware:{getattr(mgr, 'name', vmware_id)}] fresh-SOAP-test TLS verify DISABLED "
+                f"(cluster ssl_verify=false). Set ssl_verify=true once a CA-signed cert is in place."
+            )
         si = SmartConnect(host=mgr.host, user=mgr.username, pwd=mgr.password,
-                         port=mgr.port, sslContext=ctx, disableSslCertValidation=True)
+                         port=mgr.port, sslContext=ctx,
+                         disableSslCertValidation=not verify_tls)
         if si:
             result['fresh_soap_test'] = 'SUCCESS'
             from pyVim.connect import Disconnect
