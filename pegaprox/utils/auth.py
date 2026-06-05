@@ -104,11 +104,40 @@ def hash_password(password: str, salt: bytes = None) -> tuple:
         return base64.b64encode(salt).decode('utf-8'), base64.b64encode(key).decode('utf-8')
 
 
+# H3 (scale audit 2026-06-05): argon2 (64MB) and pbkdf2 (600k) are CPU-heavy and
+# would freeze the single gevent hub for ~80ms each — a login burst serializes
+# into seconds of whole-process stall. Both release the GIL (verified), so we run
+# the hash off-hub in the gevent threadpool. A bounded semaphore caps how many run
+# at once so a burst of distinct logins can't oversubscribe the CPU (which would
+# still jitter the hub even with the GIL released); excess logins queue (the
+# calling greenlet waits on the semaphore, yielding the hub). Falls back inline
+# with no hub (CLI / tests).
+_PW_HASH_SEM = None
+
+def _pw_hash_offload(fn, args):
+    try:
+        from gevent import get_hub
+        from gevent.lock import BoundedSemaphore
+    except Exception:
+        return fn(*args)
+    global _PW_HASH_SEM
+    if _PW_HASH_SEM is None:
+        try:
+            n = int(os.environ.get('PEGAPROX_PW_HASH_CONCURRENCY', '8'))
+        except (TypeError, ValueError):
+            n = 8
+        _PW_HASH_SEM = BoundedSemaphore(max(1, n))
+    with _PW_HASH_SEM:
+        return get_hub().threadpool.apply(fn, args)
+
+
 def verify_password(password: str, salt_b64: str, hash_b64: str) -> bool:
-    """verify pw - handles both argon2 and old pbkdf2
-    
-    NS: Order matters! salt first, then hash
-    """
+    """verify pw - handles both argon2 and old pbkdf2 (run off-hub, see H3 above)."""
+    return _pw_hash_offload(_verify_password_sync, (password, salt_b64, hash_b64))
+
+
+def _verify_password_sync(password: str, salt_b64: str, hash_b64: str) -> bool:
+    """NS: Order matters! salt first, then hash"""
     try:
         # check for argon2
         if salt_b64 == 'argon2' or hash_b64.startswith('$argon2'):
@@ -148,11 +177,8 @@ def verify_password(password: str, salt_b64: str, hash_b64: str) -> bool:
 # attacker-supplied password against a fixed dummy hash that never matches.
 _DUMMY_ARGON2_HASH = None
 
-def dummy_verify_password(password: str) -> None:
-    """Run an Argon2 verify that always fails, to equalize login timing."""
+def _dummy_verify_password_sync(password: str) -> None:
     global _DUMMY_ARGON2_HASH
-    if not ARGON2_AVAILABLE:
-        return
     try:
         if _DUMMY_ARGON2_HASH is None:
             _DUMMY_ARGON2_HASH = PasswordHasher().hash('timing-equalizer-not-a-real-password')
@@ -160,6 +186,15 @@ def dummy_verify_password(password: str) -> None:
     except Exception:
         # VerifyMismatchError is the expected outcome; swallow everything else too
         pass
+
+
+def dummy_verify_password(password: str) -> None:
+    """Run an Argon2 verify that always fails, to equalize login timing.
+    H3: offloaded to the gevent threadpool like verify_password so the unknown-user
+    branch doesn't freeze the hub either."""
+    if not ARGON2_AVAILABLE:
+        return
+    _pw_hash_offload(_dummy_verify_password_sync, (password,))
 
 
 def needs_password_rehash(salt_b64: str, hash_b64: str) -> bool:
