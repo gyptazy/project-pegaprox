@@ -172,7 +172,8 @@ def update_user_preferences():
         'proxmoxDark', 'proxmoxLight', 'midnight', 'forest', 'rose', 'ocean',
         'highContrast', 'dracula', 'nord', 'monokai', 'matrix', 'sunset',
         'cyberpunk', 'github', 'solarizedDark', 'gruvbox',
-        'corporateDark', 'corporateLight', 'enterpriseBlue'  # NS: Corporate themes
+        'corporateDark', 'corporateLight', 'enterpriseBlue',  # NS: Corporate themes
+        'cloud'  # NS 2026-06-05: Cloud skin (Preview)
     ]
     
     if 'theme' in data:
@@ -193,7 +194,7 @@ def update_user_preferences():
     # NS: UI Layout - Jan 2026
     if 'ui_layout' in data:
         layout = data['ui_layout']
-        if layout in ['modern', 'classic', 'corporate']:
+        if layout in ['modern', 'classic', 'corporate', 'cloud']:
             user['ui_layout'] = layout
             logging.info(f"update_user_preferences: Setting ui_layout to '{_sl(layout)}' for user '{_sl(username)}'")
         else:
