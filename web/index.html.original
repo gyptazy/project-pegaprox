@@ -1104,6 +1104,15 @@
             --corp-shadow-md: 0 2px 6px rgba(0,0,0,0.2), 0 1px 3px rgba(0,0,0,0.1);
             --corp-shadow-lg: 0 4px 12px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.15);
             --corp-shadow-xl: 0 8px 24px rgba(0,0,0,0.4), 0 2px 8px rgba(0,0,0,0.2);
+            /* NS 2026-06-05 (UI polish): semantic metric + threshold colors so the
+               corporate detail views stop hardcoding hex inline (theme-aware now). */
+            --corp-metric-cpu: #49afd9;
+            --corp-metric-ram: #9b59b6;
+            --corp-metric-disk: #60b515;
+            --corp-metric-net: #efc006;
+            --corp-thresh-ok: #60b515;
+            --corp-thresh-warn: #efc006;
+            --corp-thresh-crit: #f54f47;
         }
 
         /* LW: Mar 2026 — corporate light mode tokens. NS 2026-05-10 retuned:
@@ -1143,6 +1152,14 @@
             --corp-shadow-md: 0 1px 3px rgba(15,30,50,0.06), 0 2px 6px rgba(15,30,50,0.08);
             --corp-shadow-lg: 0 2px 6px rgba(15,30,50,0.08), 0 6px 14px rgba(15,30,50,0.10);
             --corp-shadow-xl: 0 4px 12px rgba(15,30,50,0.10), 0 12px 32px rgba(15,30,50,0.12);
+            /* NS 2026-06-05 (UI polish): metric/threshold colors darkened for AA on white */
+            --corp-metric-cpu: #0079b8;
+            --corp-metric-ram: #8e44ad;
+            --corp-metric-disk: #4e9a06;
+            --corp-metric-net: #b7950b;
+            --corp-thresh-ok: #4e9a06;
+            --corp-thresh-warn: #b7950b;
+            --corp-thresh-crit: #d64541;
             background-color: #eef1f4 !important;
             color: #1c2733 !important;
         }
@@ -1322,7 +1339,7 @@
 
         /* NS: Mar 2026 - comprehensive light mode overrides for all corp-* classes */
         /* modals */
-        body[data-corp-theme="light"] .corp-modal-header { background: linear-gradient(180deg, #ffffff 0%, #f6f8fa 100%) !important; border-color: #c0ccd4 !important; }
+        body[data-corp-theme="light"] .corp-modal-header { background: #f6f8fa !important; border-color: #c0ccd4 !important; }
         body[data-corp-theme="light"] .corp-modal-title { color: #1c2733 !important; }
         body[data-corp-theme="light"] .corp-modal-close { color: #888 !important; }
         body[data-corp-theme="light"] .corp-modal-close:hover { color: #333 !important; }
@@ -1725,7 +1742,7 @@
 
         /* LW: Feb 2026 - Corporate VM Detail property grid (Clarity dark theme) */
         .corp-property-grid { width: 100%; border-collapse: collapse; }
-        .corp-property-grid td { padding: 6px 14px 6px 0; font-size: 13px; border-bottom: 1px solid var(--corp-divider, #37474f); }
+        .corp-property-grid td { padding: 6px 14px; font-size: 13px; border-bottom: 1px solid var(--corp-divider, #37474f); }
         .corp-property-grid td:first-child { color: var(--corp-text-secondary, #adbbc4); white-space: nowrap; width: 150px; }
         .corp-property-grid td:last-child { color: var(--color-text, #e9ecef); }
         .corp-property-grid tr:last-child td { border-bottom: none; }
@@ -1737,6 +1754,9 @@
             align-items: center; gap: 4px; border-radius: 3px !important;
         }
         .corp-toolbar button:hover { background: rgba(73, 175, 217, 0.12); border-color: var(--corp-accent, #49afd9); color: #fff; }
+        /* NS 2026-06-05 (UI polish, a11y): keyboard focus ring — the tab strip already
+           had one, the toolbar buttons didn't. */
+        .corp-toolbar button:focus-visible { outline: 2px solid var(--corp-accent, #49afd9); outline-offset: 1px; }
         .corp-toolbar button:disabled { opacity: 0.4; cursor: not-allowed; }
         .corp-toolbar button:disabled:hover { background: transparent; border-color: var(--color-border, #485764); color: var(--corp-text-secondary, #adbbc4); }
 
@@ -1771,8 +1791,11 @@
             letter-spacing: 0.08em; padding: 12px 0 8px; border-bottom: 2px solid var(--corp-border-subtle, #283844); margin-bottom: 8px; }
 
         /* Corporate action dropdown */
-        .corp-dropdown { background: var(--color-card, #22343c); border: 1px solid var(--color-border, #485764); box-shadow: var(--corp-shadow-lg, 0 4px 12px rgba(0,0,0,0.3)); }
+        .corp-dropdown { background: var(--color-card, #22343c); border: 1px solid var(--color-border, #485764); box-shadow: var(--corp-shadow-lg, 0 4px 12px rgba(0,0,0,0.3));
+            animation: corp-dropdown-in 0.12s ease-out; transform-origin: top; }
         .corp-dropdown button:hover { background: var(--color-hover, #29414e); }
+        /* NS 2026-06-05 (UI polish): subtle fade/scale-in so menus don't pop abruptly */
+        @keyframes corp-dropdown-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 
         /* LW: Mar 2026 - Right-click context menu for sidebar tree */
         .corp-context-menu { background: var(--corp-surface-3); border: 1px solid var(--corp-border-medium); box-shadow: var(--corp-shadow-lg, 0 4px 12px rgba(0,0,0,0.3)); min-width: 200px; max-width: 280px; padding: 4px 0; font-size: 13px; z-index: 999; }

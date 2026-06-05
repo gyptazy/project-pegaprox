@@ -1208,7 +1208,7 @@
                                 <div className="space-y-1">
                                     {fsInfo.filesystems.map((fs, i) => {
                                         const pct = fs.used_pct == null ? 0 : fs.used_pct;
-                                        const barColor = pct > 90 ? '#f54f47' : pct > 75 ? '#efc006' : '#60b515';
+                                        const barColor = pct > 90 ? 'var(--corp-thresh-crit)' : pct > 75 ? 'var(--corp-thresh-warn)' : 'var(--corp-thresh-ok)';
                                         const sizes = fs.used_bytes != null && fs.total_bytes != null
                                             ? `${formatBytes(fs.used_bytes)} / ${formatBytes(fs.total_bytes)}` : '';
                                         return (
@@ -1885,22 +1885,22 @@
                                     {/* stats */}
                                     <div className="mt-3 flex gap-4">
                                         <div className="flex items-center gap-1.5">
-                                            <div className="w-2 h-2 rounded-full" style={{background: '#49afd9'}}></div>
+                                            <div className="w-2 h-2 rounded-full" style={{background: 'var(--corp-metric-cpu)'}}></div>
                                             <span className="text-[12px]" style={{color: '#adbbc4'}}>{t('cpuUsage')}</span>
                                             <span className="text-[12px] font-medium" style={{color: '#e9ecef'}}>{cpuPercent}%</span>
                                         </div>
                                         <div className="flex items-center gap-1.5">
-                                            <div className="w-2 h-2 rounded-full" style={{background: '#9b59b6'}}></div>
+                                            <div className="w-2 h-2 rounded-full" style={{background: 'var(--corp-metric-ram)'}}></div>
                                             <span className="text-[12px]" style={{color: '#adbbc4'}}>{t('ramUsage')}</span>
                                             <span className="text-[12px] font-medium" style={{color: '#e9ecef'}}>{formatBytes(vm.mem)}</span>
                                         </div>
                                         <div className="flex items-center gap-1.5">
-                                            <div className="w-2 h-2 rounded-full" style={{background: '#60b515'}}></div>
+                                            <div className="w-2 h-2 rounded-full" style={{background: 'var(--corp-metric-disk)'}}></div>
                                             <span className="text-[12px]" style={{color: '#adbbc4'}}>{t('disk')}</span>
                                             <span className="text-[12px] font-medium" style={{color: '#e9ecef'}}>{vm.disk > 0 ? `${formatBytes(vm.disk)} / ${formatBytes(vm.maxdisk)}` : formatBytes(vm.maxdisk)}</span>
                                         </div>
                                         <div className="flex items-center gap-1.5">
-                                            <div className="w-2 h-2 rounded-full" style={{background: '#efc006'}}></div>
+                                            <div className="w-2 h-2 rounded-full" style={{background: 'var(--corp-metric-net)'}}></div>
                                             <span className="text-[12px]" style={{color: '#adbbc4'}}>{t('uptime')}</span>
                                             <span className="text-[12px] font-medium" style={{color: '#e9ecef'}}>{formatUptime(vm.uptime)}</span>
                                         </div>
@@ -1940,7 +1940,7 @@
                                     <div className="p-3 space-y-2">
                                         {fsInfo.filesystems.map((fs, i) => {
                                             const pct = fs.used_pct == null ? 0 : fs.used_pct;
-                                            const barColor = pct > 90 ? '#f54f47' : pct > 75 ? '#efc006' : '#60b515';
+                                            const barColor = pct > 90 ? 'var(--corp-thresh-crit)' : pct > 75 ? 'var(--corp-thresh-warn)' : 'var(--corp-thresh-ok)';
                                             return (
                                                 <div key={i} className="flex items-center gap-2 text-[12px]">
                                                     <span style={{color: '#adbbc4', minWidth: '140px', fontFamily: 'monospace'}} title={fs.name || ''}>{fs.mountpoint}</span>
