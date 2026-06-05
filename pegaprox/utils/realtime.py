@@ -28,6 +28,33 @@ from pegaprox.globals import (
 _MAX_BROADCAST_BYTES = int(os.environ.get('PEGAPROX_MAX_BROADCAST_BYTES', str(5_000_000)))
 
 
+def watched_clusters():
+    """Cluster IDs at least one live SSE/WS client is subscribed to, or None if
+    any client has all-access (clusters=None → poll everything). Shared by the
+    broadcast loop AND the per-cluster background refreshers so they skip work
+    for clusters nobody is viewing. NS 2026-06-05 (scale audit H4 / #528)."""
+    watched = set()
+    with sse_clients_lock:
+        for c in list(sse_clients.values()):
+            sub = c.get('clusters')
+            if sub is None:
+                return None
+            watched.update(sub)
+    with ws_clients_lock:
+        for c in list(ws_clients.values()):
+            sub = c.get('clusters')
+            if sub is None:
+                return None
+            watched.update(sub)
+    return watched
+
+
+def is_cluster_watched(cluster_id):
+    """True if any live client is viewing this cluster (or has all-access)."""
+    w = watched_clusters()
+    return w is None or cluster_id in w
+
+
 def push_immediate_update(cluster_id: str, delay: float = 0.3):
     """NS: push immediate SSE update after VM actions for faster UI feedback"""
     def _push():

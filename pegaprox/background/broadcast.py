@@ -20,33 +20,11 @@ from pegaprox.utils.realtime import broadcast_sse
 
 
 def _watched_clusters():
-    """Cluster IDs at least one live SSE/WS client is subscribed to.
-
-    Returns None when any client is subscribed to ALL (clusters=None) — then we
-    poll everything. Otherwise returns the union of every client's subscription;
-    clusters in that set are being viewed, the rest are not.
-
-    NS 2026-06-05 (#528 scaling): the frontend already narrows each client's
-    subscription to the selected + expanded clusters, and broadcast_sse filters
-    per-client — so a cluster NO client subscribes to has its (expensive: per-node
-    fan-out + json serialize) poll done every loop for events that reach nobody.
-    Skipping those makes the broadcast cost scale with VIEWED clusters, not total
-    cluster count. Safe precisely because no client receives the skipped events.
-    """
-    watched = set()
-    with sse_clients_lock:
-        for c in list(sse_clients.values()):
-            sub = c.get('clusters')
-            if sub is None:
-                return None
-            watched.update(sub)
-    with ws_clients_lock:
-        for c in list(ws_clients.values()):
-            sub = c.get('clusters')
-            if sub is None:
-                return None
-            watched.update(sub)
-    return watched
+    """Cluster IDs at least one live SSE/WS client is subscribed to (None = an
+    all-access client → poll everything). Single source of truth now lives in
+    utils.realtime so the per-cluster background refreshers share it. #528 / H4."""
+    from pegaprox.utils.realtime import watched_clusters
+    return watched_clusters()
 
 # NS 2026-06-05 (#528 scaling): per-cluster "broadcast greenlet in flight" flags.
 # The loop spawns one greenlet per cluster every ~1s; a slow-but-not-erroring

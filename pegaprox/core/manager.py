@@ -47,7 +47,7 @@ from pegaprox.globals import (
 )
 from pegaprox.models.tasks import MaintenanceTask, PegaProxConfig
 from pegaprox.core.config import save_config
-from pegaprox.utils.realtime import broadcast_sse
+from pegaprox.utils.realtime import broadcast_sse, is_cluster_watched
 from pegaprox.utils.ssh import get_ssh_connection_stats, _ssh_track_connection
 from pegaprox.utils.concurrent import GEVENT_PATCHED
 from pegaprox.core.db import get_db
@@ -15501,10 +15501,17 @@ echo DONE""",
             return
         _NO_AGENT_TTL = 300  # 5 minutes
         last_no_agent_clear = time.time()
+        import random
         while not self.stop_event.is_set():
             try:
                 if self.is_connected:
-                    self.refresh_ip_cache()
+                    # H4 (scale audit): only refresh IPs for a cluster someone is
+                    # actually viewing — this fans out 1-2 guest-agent calls PER
+                    # running VM; doing it for all 30 clusters every 30s saturates
+                    # the shared node pool for data no client is looking at. The
+                    # _no_agent_vms TTL-clear stays unconditional (cheap).
+                    if is_cluster_watched(self.id):
+                        self.refresh_ip_cache()
                     now = time.time()
                     if now - last_no_agent_clear >= _NO_AGENT_TTL:
                         if self._no_agent_vms:
@@ -15513,7 +15520,8 @@ echo DONE""",
                         last_no_agent_clear = now
             except Exception as e:
                 self.logger.debug(f"[IP refresh loop] error: {e}")
-            self.stop_event.wait(30)
+            # H4: jitter so 30 managers don't fire on the same wall-clock tick
+            self.stop_event.wait(30 + random.uniform(0, 10))
 
     def start(self):
         """Start the PegaProx daemon"""
