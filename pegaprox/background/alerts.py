@@ -24,6 +24,7 @@ from pegaprox.globals import (
 from pegaprox.core.db import get_db
 from pegaprox.api.helpers import load_server_settings, save_server_settings
 from pegaprox.utils.email import send_email
+from pegaprox.utils.concurrent import run_concurrent  # H5: parallel backup-store scan
 
 def load_alerts_config():
     """Load alerts configuration from SQLite database.
@@ -218,40 +219,63 @@ def check_and_send_alerts():
                                 _now = int(_t.time())
                                 _max_s = max_age * 3600
                                 vms = manager.get_vm_resources() or []
-                                last_bk = {}
-                                try:
-                                    sess = manager._create_session()
-                                    nr = sess.get(f"https://{manager.host}:{manager.api_port}/api2/json/nodes", timeout=10)
-                                    nodes = [n['node'] for n in (nr.json().get('data') or [])
-                                             if n.get('status') == 'online'] if nr.status_code == 200 else []
-                                    seen = set()
-                                    for nd in nodes:
-                                        sr = sess.get(f"https://{manager.host}:{manager.api_port}/api2/json/nodes/{nd}/storage", timeout=10)
-                                        if sr.status_code != 200: continue
-                                        for st in sr.json().get('data') or []:
-                                            if 'backup' not in (st.get('content') or ''): continue
-                                            sname = st.get('storage')
-                                            if not sname or (nd, sname) in seen: continue
-                                            seen.add((nd, sname))
+                                # H5 (scale audit): the backup-store walk (per node →
+                                # per backup storage → /content) is serial and can take
+                                # minutes on big PBS/NFS stores; backups change slowly, so
+                                # re-running it on every 60s alert tick stalled the whole
+                                # alert loop. Cache the last-backup map (10-min TTL,
+                                # regardless of whether an alert fired) + fan the per-node
+                                # walk out over the pool.
+                                _bk_ent = getattr(manager, '_backup_sla_cache', None)
+                                if _bk_ent and (_t.time() - _bk_ent[0]) < 600:
+                                    last_bk = _bk_ent[1]
+                                else:
+                                    last_bk = {}
+                                    try:
+                                        sess = manager._create_session()
+                                        nr = sess.get(f"https://{manager.host}:{manager.api_port}/api2/json/nodes", timeout=10)
+                                        nodes = [n['node'] for n in (nr.json().get('data') or [])
+                                                 if n.get('status') == 'online'] if nr.status_code == 200 else []
+
+                                        def _scan_node(nd):
+                                            out = {}
                                             try:
-                                                cr = sess.get(f"https://{manager.host}:{manager.api_port}/api2/json/nodes/{nd}/storage/{sname}/content",
-                                                              params={'content': 'backup'}, timeout=(5, 30))
+                                                sr = sess.get(f"https://{manager.host}:{manager.api_port}/api2/json/nodes/{nd}/storage", timeout=10)
+                                                if sr.status_code != 200:
+                                                    return out
+                                                for st in sr.json().get('data') or []:
+                                                    if 'backup' not in (st.get('content') or ''): continue
+                                                    sname = st.get('storage')
+                                                    if not sname: continue
+                                                    try:
+                                                        cr = sess.get(f"https://{manager.host}:{manager.api_port}/api2/json/nodes/{nd}/storage/{sname}/content",
+                                                                      params={'content': 'backup'}, timeout=(5, 30))
+                                                    except Exception:
+                                                        continue
+                                                    if cr.status_code != 200: continue
+                                                    for it in cr.json().get('data') or []:
+                                                        ts = int(it.get('ctime') or 0)
+                                                        vmid = str(it.get('vmid') or '')
+                                                        if not ts or not vmid: continue
+                                                        volid = it.get('volid') or ''
+                                                        vt = 'qemu' if 'qemu' in volid or '/vm/' in volid else \
+                                                             'lxc' if 'lxc' in volid or '/ct/' in volid else ''
+                                                        if not vt: continue
+                                                        k = (vt, vmid)
+                                                        if k not in out or ts > out[k]:
+                                                            out[k] = ts
                                             except Exception:
-                                                continue
-                                            if cr.status_code != 200: continue
-                                            for it in cr.json().get('data') or []:
-                                                ts = int(it.get('ctime') or 0)
-                                                vmid = str(it.get('vmid') or '')
-                                                if not ts or not vmid: continue
-                                                volid = it.get('volid') or ''
-                                                vt = 'qemu' if 'qemu' in volid or '/vm/' in volid else \
-                                                     'lxc' if 'lxc' in volid or '/ct/' in volid else ''
-                                                if not vt: continue
-                                                k = (vt, vmid)
+                                                pass
+                                            return out
+
+                                        for _res in run_concurrent([lambda n=nd: _scan_node(n) for nd in nodes], timeout=120):
+                                            if not _res: continue
+                                            for k, ts in _res.items():
                                                 if k not in last_bk or ts > last_bk[k]:
                                                     last_bk[k] = ts
-                                except Exception:
-                                    pass
+                                    except Exception:
+                                        pass
+                                    manager._backup_sla_cache = (_t.time(), last_bk)
                                 breached = 0
                                 ok_cnt = 0
                                 total = 0
