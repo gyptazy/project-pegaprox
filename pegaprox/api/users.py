@@ -13,7 +13,7 @@ from pegaprox.constants import *
 from pegaprox.globals import *
 from pegaprox.models.permissions import *
 from pegaprox.core.db import get_db
-from pegaprox.utils.sanitization import sanitize_username
+from pegaprox.utils.sanitization import sanitize_username, sanitize_log_message as _sl
 
 from pegaprox.utils.auth import (
     hash_password, verify_password, validate_password_policy,
@@ -156,7 +156,7 @@ def update_user_preferences():
     username = request.session['user']
     data = request.get_json() or {}
     
-    logging.info(f"update_user_preferences: user={username}, data={data}")
+    logging.info(f"update_user_preferences: user={_sl(username)}, data={_sl(data)}")
     
     users_db = load_users()
     
@@ -195,7 +195,7 @@ def update_user_preferences():
         layout = data['ui_layout']
         if layout in ['modern', 'classic', 'corporate']:
             user['ui_layout'] = layout
-            logging.info(f"update_user_preferences: Setting ui_layout to '{layout}' for user '{username}'")
+            logging.info(f"update_user_preferences: Setting ui_layout to '{_sl(layout)}' for user '{_sl(username)}'")
         else:
             return jsonify({'error': f'Invalid layout: {layout}'}), 400
     
@@ -211,7 +211,7 @@ def update_user_preferences():
     db = get_db()
     db.save_user(username, user)
     
-    logging.info(f"User '{username}' updated preferences: theme={user.get('theme')}, language={user.get('language')}, ui_layout={user.get('ui_layout')}, taskbar_auto_expand={user.get('taskbar_auto_expand')}")
+    logging.info(f"User '{_sl(username)}' updated preferences: theme={_sl(user.get('theme'))}, language={_sl(user.get('language'))}, ui_layout={_sl(user.get('ui_layout'))}, taskbar_auto_expand={user.get('taskbar_auto_expand')}")
     log_audit(username, 'user.preferences_updated', f"Updated preferences: theme={user.get('theme')}, layout={user.get('ui_layout')}")
     
     settings = load_server_settings()
@@ -246,7 +246,7 @@ def admin_disable_2fa(username):
     user.pop('totp_pending_secret', None)
     save_users(users_db)
     
-    logging.info(f"Admin '{request.session['user']}' disabled 2FA for user '{username}'")
+    logging.info(f"Admin '{_sl(request.session['user'])}' disabled 2FA for user '{_sl(username)}'")
     log_audit(request.session['user'], '2fa.admin_disabled', f"Admin disabled 2FA for user: {username}")
     
     return jsonify({'success': True, 'message': f'2FA for {username} disabled'})
@@ -405,7 +405,7 @@ def unlock_ip(ip_address):
     
     if ip_address in login_attempts_by_ip:
         del login_attempts_by_ip[ip_address]
-        logging.info(f"Admin manually unlocked IP: {ip_address}")
+        logging.info(f"Admin manually unlocked IP: {_sl(ip_address)}")
         log_audit(request.headers.get('X-Username', 'admin'), 'security.unlock_ip', f"Manually unlocked IP: {ip_address}")
         return jsonify({'success': True, 'message': f'IP {ip_address} unlocked'})
     else:
@@ -425,7 +425,7 @@ def unlock_user(username):
     
     if username in login_attempts_by_user:
         del login_attempts_by_user[username]
-        logging.info(f"Admin manually unlocked user: {username}")
+        logging.info(f"Admin manually unlocked user: {_sl(username)}")
         log_audit(request.session.get('user', 'admin'), 'security.unlock_user', f"Manually unlocked user: {username}")
         return jsonify({'success': True, 'message': f'User {username} unlocked'})
     else:
@@ -885,7 +885,7 @@ def delete_user(username):
     try:
         db = get_db()
         db.delete_user(username)
-        logging.info(f"Deleted user '{username}' from database")
+        logging.info(f"Deleted user '{_sl(username)}' from database")
     except Exception as e:
         logging.error(f"Failed to delete user from DB: {e}")
         return jsonify({'error': 'Failed to delete user'}), 500
@@ -898,7 +898,7 @@ def delete_user(username):
     for sid in to_remove:
         del active_sessions[sid]
     
-    logging.info(f"Admin '{request.session['user']}' deleted user '{username}'")
+    logging.info(f"Admin '{_sl(request.session['user'])}' deleted user '{_sl(username)}'")
     log_audit(request.session['user'], 'user.deleted', f"Deleted user: {username}")
     
     return jsonify({'success': True})

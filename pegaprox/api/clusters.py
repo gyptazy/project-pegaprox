@@ -15,6 +15,7 @@ from pegaprox.core.db import get_db
 
 from pegaprox.utils.auth import require_auth, load_users
 from pegaprox.utils.audit import log_audit
+from pegaprox.utils.sanitization import sanitize_log_message as _sl  # CWE-117
 from pegaprox.utils.rbac import (
     has_permission, get_user_clusters, filter_clusters_for_user,
     user_can_access_vm, invalidate_pool_cache, get_vm_acls,
@@ -2330,7 +2331,7 @@ def add_to_proxmox_ha(cluster_id):
         auto_rebalance = bool(auto_rebalance)
 
     if not vmid:
-        logging.warning(f"[HA] Add resource failed: no vmid/sid in request data: {data}")
+        logging.warning(f"[HA] Add resource failed: no vmid/sid in request data: {_sl(data)}")
         return jsonify({'error': 'vmid or sid required (format: vm:100 or ct:101)'}), 400
 
     result = mgr.add_vm_to_proxmox_ha(vmid, vm_type, group, max_restart, max_relocate, state, comment,
