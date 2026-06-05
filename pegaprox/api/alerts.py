@@ -611,7 +611,11 @@ def test_alert_channel(cid):
         'message': 'This is a test alert triggered from PegaProx settings.',
         'timestamp': datetime.now().isoformat(),
     }
-    ok, detail = send_to_channel(ch, alert)
+    ok, _detail = send_to_channel(ch, alert)
+    # M-7: don't echo the precise upstream HTTP status / connect-vs-refuse — that
+    # turned this admin endpoint into an SSRF port-scan oracle. Coarse pass/fail
+    # still lets an admin validate a real Slack/Discord/ntfy URL.
+    detail = 'Delivered' if ok else 'Delivery failed — check the channel URL and that the endpoint is reachable'
     return jsonify({'success': ok, 'detail': detail})
 
 

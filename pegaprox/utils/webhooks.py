@@ -30,6 +30,22 @@ except ImportError:
     requests = None
 
 
+def _guard_url(url):
+    """SSRF guard for admin-configured alert webhooks (audit M-7/M-8). Blocks
+    metadata / loopback / RFC1918 targets unless the operator opts in via the
+    `alert_webhook_allow_private` server setting (some shops run an internal
+    ntfy/Gotify on the LAN). Mirrors the siem.py / site_recovery.py pattern.
+    Imports are deferred so this utils-layer module doesn't pull api.* at load.
+    Returns (ok, reason)."""
+    try:
+        from pegaprox.utils.url_security import is_safe_outbound_url
+        from pegaprox.api.helpers import load_server_settings
+    except Exception:
+        return True, ''  # guard module unavailable → don't silently break sends
+    allow_priv = bool((load_server_settings() or {}).get('alert_webhook_allow_private', False))
+    return is_safe_outbound_url(url, allowed_schemes=('https', 'http'), allow_private=allow_priv)
+
+
 def _severity_color(sev):
     """Returns hex color for Slack/Discord embed side-stripe."""
     return {'critical': '#f54f47', 'warning': '#efc006'}.get((sev or '').lower(), '#60b515')
@@ -153,8 +169,11 @@ def _post_ntfy(channel, alert):
     if token:
         headers['Authorization'] = f'Bearer {token}'
     body = alert.get('message', '')
+    ok_url, _why = _guard_url(url)
+    if not ok_url:
+        return False, 'blocked: unsafe url'
     try:
-        r = requests.post(url, data=body.encode('utf-8'), headers=headers, timeout=6)
+        r = requests.post(url, data=body.encode('utf-8'), headers=headers, timeout=6, allow_redirects=False)
         return 200 <= r.status_code < 300, f'HTTP {r.status_code}'
     except Exception as e:
         return False, _redact_webhook_url(str(e))
@@ -169,6 +188,11 @@ def send_to_channel(channel, alert):
     url = (channel.get('url') or '').strip()
     if not url:
         return False, 'no url'
+    # M-7/M-8: gate the admin-supplied URL before any send (covers all 5 types —
+    # ntfy only appends a path to this same host).
+    ok_url, _why = _guard_url(url)
+    if not ok_url:
+        return False, 'blocked: unsafe url'
     ctype = (channel.get('type') or 'generic').lower()
 
     if ctype == 'ntfy':
@@ -185,7 +209,7 @@ def send_to_channel(channel, alert):
         body = {'alert': alert, 'source': 'pegaprox', 'timestamp': datetime.now().isoformat()}
 
     try:
-        r = requests.post(url, json=body, timeout=6)
+        r = requests.post(url, json=body, timeout=6, allow_redirects=False)
         return 200 <= r.status_code < 400, f'HTTP {r.status_code}'
     except Exception as e:
         return False, _redact_webhook_url(str(e))
