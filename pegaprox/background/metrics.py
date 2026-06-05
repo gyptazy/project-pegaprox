@@ -76,6 +76,15 @@ def _retention_snapshots():
     return days * 288  # 24h × (60/5min)
 
 
+def _retention_days():
+    raw = os.environ.get('PEGAPROX_METRICS_RETENTION_DAYS', '30').strip()
+    try:
+        days = int(raw)
+    except (TypeError, ValueError):
+        days = 30
+    return max(7, min(days, 365))
+
+
 def save_metrics_snapshot(snapshot):
     """Save a single metrics snapshot to SQLite.
 
@@ -85,29 +94,28 @@ def save_metrics_snapshot(snapshot):
     the shape. Insights / Cost / Power / Prometheus exporter / the new
     `/insights/history` endpoint all read from this table so it's a
     single source of truth.
+
+    NS 2026-06-05 (#528 scaling): at 30 clusters / 100+ nodes the data blob is
+    multi-MB, and json.dumps + SQLCipher-encrypt + INSERT + prune all ran on the
+    gevent hub every 5 min — a periodic freeze. Now the whole thing (incl. the
+    json.dumps) runs off-hub on a fresh connection via run_heavy_write, and the
+    prune is an indexed timestamp DELETE instead of a full-table anti-join.
     """
     try:
-        db = get_db()
-        cursor = db.conn.cursor()
-
+        from pegaprox.core.dbcrypto import run_heavy_write
+        from datetime import timedelta
         timestamp = snapshot.get('timestamp', datetime.now().isoformat())
-        data = json.dumps({k: v for k, v in snapshot.items() if k != 'timestamp'})
+        cutoff = (datetime.now() - timedelta(days=_retention_days())).isoformat()
 
-        cursor.execute('''
-            INSERT INTO metrics_history (timestamp, data)
-            VALUES (?, ?)
-        ''', (timestamp, data))
-
-        keep = _retention_snapshots()
-        cursor.execute(f'''
-            DELETE FROM metrics_history
-            WHERE id NOT IN (
-                SELECT id FROM metrics_history
-                ORDER BY timestamp DESC LIMIT {int(keep)}
-            )
-        ''')
-
-        db.conn.commit()
+        def _build():
+            # json.dumps of the multi-MB blob happens HERE, in the worker thread
+            data = json.dumps({k: v for k, v in snapshot.items() if k != 'timestamp'})
+            return [
+                ("INSERT INTO metrics_history (timestamp, data) VALUES (?, ?)", (timestamp, data)),
+                # indexed prune (idx_metrics_timestamp) — keep last N days
+                ("DELETE FROM metrics_history WHERE timestamp < ?", (cutoff,)),
+            ]
+        run_heavy_write(build=_build)
     except Exception as e:
         logging.error(f"Error saving metrics snapshot: {e}")
 

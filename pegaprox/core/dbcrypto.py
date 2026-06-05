@@ -362,6 +362,42 @@ def run_heavy_read(sql: str, params: tuple = (), cache_key: str = None, ttl: flo
         _HEAVY_INFLIGHT.pop(cache_key, None)
 
 
+def run_heavy_write(statements=None, build=None):
+    """Execute write statements on a FRESH connection inside gevent's threadpool
+    so a big encrypt+INSERT (and any prune) doesn't freeze the hub.
+
+    NS 2026-06-05 (#528 scaling): the metrics snapshot write json.dumps's a
+    multi-MB blob, encrypts it (SQLCipher), INSERTs, then prunes — all of which
+    used to run on the hub every 5 min. Offloading it keeps the event loop free.
+
+    statements — iterable of (sql, params) run in one transaction.
+    build       — optional callable() -> statements, run INSIDE the worker
+                  thread so even CPU-heavy prep (json.dumps) stays off the hub.
+    Returns True on success. WAL + the connection's busy timeout handle the rare
+    contention with the main connection (this runs every 5 min)."""
+    def _work():
+        from pegaprox.constants import DATABASE_FILE
+        conn = connect(DATABASE_FILE, timeout=30, check_same_thread=False)
+        try:
+            stmts = build() if build is not None else (statements or [])
+            cur = conn.cursor()
+            for sql, params in stmts:
+                cur.execute(sql, params or ())
+            conn.commit()
+            return True
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    try:
+        from gevent import get_hub
+        return get_hub().threadpool.apply(_work)
+    except Exception:
+        # No active hub (CLI / migration) — run inline.
+        return _work()
+
+
 # ─── Auto-migration on app startup ──────────────────────────────────────────
 # NS May 2026 — "nuklear" means auto-on-boot. The CLI tool is the manual
 # escape hatch; normal operators never have to think about migration.
