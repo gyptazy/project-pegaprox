@@ -12765,6 +12765,33 @@
                 if (cId) fetchClusterResources(cId);
             };
 
+            // NS 2026-06: pulled out of the inline CreateSnapshotModal onSubmit so the Cloud
+            // skin can reuse the exact same create logic — the snapshot modal renders in both
+            // the classic return and the cloud branch and they share dashSnapshotVm state.
+            const handleDashSnapshotSubmit = async (snapname, description, vmstate, modeInfo) => {
+                const vm = dashSnapshotVm;
+                if (!vm) return;
+                const cId = vm._clusterId || selectedCluster?.id;
+                setDashSnapshotLoading(true);
+                try {
+                    const url = modeInfo?.mode === 'efficient'
+                        ? `${API_URL}/clusters/${cId}/vms/${vm.node}/${vm.type}/${vm.vmid}/efficient-snapshots`
+                        : `${API_URL}/clusters/${cId}/vms/${vm.node}/${vm.type}/${vm.vmid}/snapshots`;
+                    const body = modeInfo?.mode === 'efficient'
+                        ? { snapname, description, snap_size_gb: modeInfo.snap_size_gb }
+                        : { snapname, description, vmstate };
+                    const res = await authFetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+                    if (res && res.ok) {
+                        addToast(`${t('snapshotCreated') || 'Snapshot created'}: '${snapname}'`);
+                        setDashSnapshotVm(null);
+                    } else if (res) {
+                        const err = await res.json();
+                        addToast(err.error || 'Snapshot failed', 'error');
+                    }
+                } catch { addToast(t('connectionError'), 'error'); }
+                setDashSnapshotLoading(false);
+            };
+
             // LW: Mar 2026 - build menu items for sidebar right-click
             // NS: kept this in dashboard so it has direct access to all the handlers
             const buildContextMenuItems = (type, target) => {
@@ -13009,6 +13036,36 @@
             // self-contained shell (cloud.js). Mount it instead of the Modern/Corporate
             // chrome. onExitCloud flips back to Modern so the user is never locked in.
             if (isCloud) {
+                // bundle the existing dashboard handlers/modal-openers so the Cloud shell
+                // wires the SAME real endpoints (cluster-id threading, confirms, optimistic
+                // UI, toasts all already live in these) rather than re-implementing fetch.
+                const cloudActions = {
+                    vmAction: handleVmAction,                         // (resource, action)
+                    forceStop: handleForceStop,                       // (resource)
+                    openConsole: handleOpenConsole,                   // (resource)
+                    openLxcShell: (vm) => setLxcShellVm(vm),
+                    openConfig: handleOpenConfig,                     // (resource) -> ConfigModal
+                    openMetrics: (vm) => setCorpMetricsVm(vm),
+                    migrate: (vm) => setDashMigrateVm(vm),
+                    clone: (vm) => setDashCloneVm(vm),
+                    del: (vm) => setDashDeleteVm(vm),
+                    crossMigrate: (vm) => setDashCrossClusterVm(vm),
+                    snapshot: (vm) => setDashSnapshotVm(vm),
+                    createVm: (type) => setShowCreateVm(type || 'qemu'),
+                    nodeAction: handleNodeAction,                     // (nodeName, 'reboot'|'shutdown')
+                    maintenanceToggle: handleMaintenanceToggle,       // (nodeName, enable)
+                    startUpdate: handleStartUpdate,                   // (nodeName, reboot)
+                    configNode: (node) => setConfigNode(node),
+                    refresh: () => {
+                        if (!selectedCluster) return;
+                        fetchClusterMetrics(selectedCluster.id);
+                        fetchClusterResources(selectedCluster.id);
+                        fetchClusterDatastores(selectedCluster.id);
+                        fetchClusterNetworks(selectedCluster.id);
+                        fetchClusterPools(selectedCluster.id);
+                        fetchTasks(selectedCluster.id);
+                    },
+                };
                 return (
                     <div style={{ height: '100vh', overflow: 'hidden' }}>
                         <CloudShell
@@ -13018,10 +13075,58 @@
                             clusterResources={clusterResources}
                             clusterMetrics={clusterMetrics}
                             allClusterMetrics={allClusterMetrics}
-                            t={t}
+                            /* datastores: source from the always-set sidebar cache — the
+                               clusterDatastores state has a selectedClusterRef guard that
+                               races against the cloud auto-select and can stay empty. -- NS */
+                            clusterDatastores={(selectedCluster && sidebarClusterData[selectedCluster.id] && sidebarClusterData[selectedCluster.id].datastores) || clusterDatastores}
+                            clusterNetworks={clusterNetworks}
+                            clusterPools={clusterPools}
+                            tasks={tasks}
+                            knownNodes={knownNodes}
+                            actions={cloudActions}
                             isAdmin={isAdmin}
+                            currentUser={user}
+                            t={t}
                             onExitCloud={() => updatePreferences({ ui_layout: 'modern', theme: 'proxmoxDark' })}
                         />
+                        {/* Resource-action modals — shared dashboard state, mounted here too so
+                            they surface over the cloud shell. The classic copies live in the main
+                            return; the skins are mutually exclusive so only one set ever mounts. */}
+                        {configVm && (configVm._clusterId || selectedCluster) && (
+                            <ConfigModal vm={configVm} clusterId={configVm._clusterId || selectedCluster.id} allClusters={clusters} dashboardAuthFetch={authFetch} onClose={handleCloseConfig} addToast={addToast} isCorporate={false} />
+                        )}
+                        {configNode && selectedCluster && (
+                            <NodeModal node={configNode} clusterId={selectedCluster.id} clusterType={selectedCluster.cluster_type || 'proxmox'} onClose={() => setConfigNode(null)} addToast={addToast} />
+                        )}
+                        {dashMigrateVm && (
+                            <MigrateModal vm={dashMigrateVm} nodes={Object.keys(clusterMetrics)} clusterId={dashMigrateVm._clusterId || selectedCluster?.id} onMigrate={handleMigrate} onClose={() => setDashMigrateVm(null)} />
+                        )}
+                        {dashCloneVm && (
+                            <CloneVmModal vm={dashCloneVm} nodes={Object.keys(clusterMetrics)} clusterId={dashCloneVm._clusterId || selectedCluster?.id} onClone={handleCloneVm} onClose={() => setDashCloneVm(null)} />
+                        )}
+                        {dashDeleteVm && (
+                            <DeleteVmModal vm={dashDeleteVm} clusterId={dashDeleteVm._clusterId || selectedCluster?.id} onDelete={handleDeleteVm} onClose={() => setDashDeleteVm(null)} />
+                        )}
+                        {dashCrossClusterVm && clusters.length > 1 && (
+                            <CrossClusterMigrateModal vm={dashCrossClusterVm} sourceCluster={selectedCluster} clusters={clusters} onMigrate={handleCrossClusterMigrate} onClose={() => setDashCrossClusterVm(null)} />
+                        )}
+                        {dashSnapshotVm && (
+                            <CreateSnapshotModal isQemu={dashSnapshotVm.type === 'qemu'} loading={dashSnapshotLoading} onSubmit={handleDashSnapshotSubmit} onClose={() => setDashSnapshotVm(null)} />
+                        )}
+                        {showCreateVm && selectedCluster && (
+                            <CreateVmModal vmType={showCreateVm} clusterId={selectedCluster.id} clusterType={selectedCluster.cluster_type || 'proxmox'} nodes={Object.keys(clusterMetrics)} onCreate={handleCreateVm} onClose={() => setShowCreateVm(null)} />
+                        )}
+                        {consoleStack.map(c => (
+                            c.info ? (
+                                <ConsoleModal key={c.id} vm={c.vm} consoleInfo={c.info} clusterId={c.vm._clusterId || selectedCluster?.id} onClose={() => handleCloseConsole(c.id)} hidden={c.id !== activeConsoleId} />
+                            ) : null
+                        ))}
+                        {lxcShellVm && (
+                            <LxcShellModal vm={lxcShellVm} clusterId={lxcShellVm._clusterId || selectedCluster?.id} addToast={addToast} onClose={() => setLxcShellVm(null)} />
+                        )}
+                        {corpMetricsVm && selectedCluster && (
+                            <VmMetricsModal vm={corpMetricsVm} clusterId={selectedCluster.id} onClose={() => setCorpMetricsVm(null)} />
+                        )}
                     </div>
                 );
             }
@@ -21742,28 +21847,7 @@
                         <CreateSnapshotModal
                             isQemu={dashSnapshotVm.type === 'qemu'}
                             loading={dashSnapshotLoading}
-                            onSubmit={async (snapname, description, vmstate, modeInfo) => {
-                                const vm = dashSnapshotVm;
-                                const cId = vm._clusterId || selectedCluster?.id;
-                                setDashSnapshotLoading(true);
-                                try {
-                                    const url = modeInfo?.mode === 'efficient'
-                                        ? `${API_URL}/clusters/${cId}/vms/${vm.node}/${vm.type}/${vm.vmid}/efficient-snapshots`
-                                        : `${API_URL}/clusters/${cId}/vms/${vm.node}/${vm.type}/${vm.vmid}/snapshots`;
-                                    const body = modeInfo?.mode === 'efficient'
-                                        ? { snapname, description, snap_size_gb: modeInfo.snap_size_gb }
-                                        : { snapname, description, vmstate };
-                                    const res = await authFetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
-                                    if (res && res.ok) {
-                                        addToast(`${t('snapshotCreated') || 'Snapshot created'}: '${snapname}'`);
-                                        setDashSnapshotVm(null);
-                                    } else if (res) {
-                                        const err = await res.json();
-                                        addToast(err.error || 'Snapshot failed', 'error');
-                                    }
-                                } catch { addToast(t('connectionError'), 'error'); }
-                                setDashSnapshotLoading(false);
-                            }}
+                            onSubmit={handleDashSnapshotSubmit}
                             onClose={() => setDashSnapshotVm(null)}
                         />
                     )}
