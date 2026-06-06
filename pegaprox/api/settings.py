@@ -494,6 +494,21 @@ def perform_pegaprox_update():
                 if not content_dir:
                     raise RuntimeError("Archive missing pegaprox_multi_cluster.py")
 
+                # MK 2026-06-06 (C): GitHub serves archive/refs/heads/main.tar.gz through a
+                # CDN that can hand back a STALE cached tarball for a few minutes after a
+                # push — a 200 quietly carrying the OLD tree. Compare the version.json
+                # INSIDE the extracted archive against the version we're updating TO; if it
+                # lags, bail to the per-file fallback (raw + mirror) instead of "updating"
+                # to old code. (This is one of the "update didn't catch everything" causes.)
+                try:
+                    with open(os.path.join(content_dir, 'version.json')) as _vf:
+                        _arch_ver = (json.load(_vf) or {}).get('version')
+                except (OSError, ValueError) as _ve:
+                    raise RuntimeError(f"archive version.json unreadable ({_ve}) — treating as stale")
+                if new_version and _arch_ver and _arch_ver != new_version:
+                    raise RuntimeError(
+                        f"stale archive: tarball is {_arch_ver}, expected {new_version}")
+
                 # Walk archive and copy, skip protected paths + junk.
                 # MK 2026-06-02: per-file try/except so one failed write
                 # (permission, disk full, ENOSPC) doesn't kill the whole
@@ -547,21 +562,20 @@ def perform_pegaprox_update():
 
             patterns = remote_version.get('update_files', [])
 
-            if all_repo_files and patterns:
-                # MK: expand glob patterns against actual repo file list
-                import fnmatch
-                for pat in patterns:
-                    if '*' in pat or '?' in pat:
-                        for f in all_repo_files:
-                            if fnmatch.fnmatch(f, pat):
-                                file_list.append(f)
-                    else:
-                        file_list.append(pat)
-            elif all_repo_files:
-                # no patterns? just grab everything
+            # MK 2026-06-06 (B): the fallback used to filter the repo tree down to
+            # version.json's hand-maintained `update_files` list (which has zero globs),
+            # i.e. it became "fetch exactly these 200-odd files". Any file NOT on that
+            # list — most painfully a freshly-added sponsor logo under images/ — was
+            # silently skipped on the fallback path. The archive path copies the WHOLE
+            # tree, so this only bit installs that fell back to per-file, which is why a
+            # sponsor reported their logo "never arrived". Mirror the archive: when the
+            # Trees API gives us the full tree, fetch ALL of it (is_protected + .pyc skip
+            # below still strips data/secrets/junk). update_files is only the degraded
+            # last resort when the Trees API itself is unreachable.
+            if all_repo_files:
                 file_list = all_repo_files
             elif patterns:
-                # API failed, use patterns as literal filenames (old-style compat)
+                # Trees API down — use update_files as literal filenames (old-style compat)
                 file_list = [p for p in patterns if '*' not in p and '?' not in p]
             else:
                 # absolute fallback - at least get the essentials
@@ -615,6 +629,40 @@ def perform_pegaprox_update():
 
             update_method = 'individual'
             logging.info(f"Individual update: {len(downloaded_files)} files, {len(failed_files)} failed")
+
+        # MK 2026-06-06 (B): one retry pass for files that failed to write the first time
+        # (transient lock / momentary perm hiccup). Re-fetch each via raw GitHub then
+        # mirror; whatever still fails stays in failed_files and is surfaced in the
+        # response so a partial update can't masquerade as a clean one.
+        if failed_files:
+            _still = []
+            for _rp, _err in failed_files:
+                if is_protected(_rp) or _rp.endswith('.pyc'):
+                    continue
+                _dst = os.path.join(install_dir, _rp)
+                _ok = False
+                for _bu in [GITHUB_RAW_URL, MIRROR_RAW_URL]:
+                    try:
+                        _r = requests.get(f"{_bu}/{_rp}", timeout=60)
+                        if _r.status_code == 200:
+                            os.makedirs(os.path.dirname(_dst), exist_ok=True)
+                            _tmp = _dst + '.new'
+                            with open(_tmp, 'wb') as _fh:
+                                _fh.write(_r.content)
+                            os.replace(_tmp, _dst)
+                            downloaded_files.append(_rp)
+                            _ok = True
+                            break
+                        elif _r.status_code == 404:
+                            _ok = True  # gone upstream — not a failure on our side
+                            break
+                    except Exception as _e:
+                        _err = str(_e)[:200]
+                if not _ok:
+                    _still.append((_rp, _err))
+            if len(_still) != len(failed_files):
+                logging.info(f"[update] retry recovered {len(failed_files) - len(_still)} file(s), {len(_still)} still failing")
+            failed_files = _still
 
         # Make scripts executable
         for script in ['deploy.sh', 'update.sh', 'web/Dev/build.sh']:
@@ -735,14 +783,32 @@ def perform_pegaprox_update():
         # appended to in the fallback path and the primary path had no
         # try/except at all), so 'success: true' meant "we tried" not
         # "everything landed". Now it actually reflects reality.
-        partial = len(failed_files) > 0
+        # MK 2026-06-06 (D): post-copy sanity check — read the version.json now ON DISK
+        # and confirm it matches what we meant to install. A mismatch means the tree
+        # didn't fully land (stale source / mid-copy failure); surface it via `partial`
+        # instead of flashing a green check.
+        on_disk_version = None
+        try:
+            with open(os.path.join(install_dir, 'version.json')) as _dvf:
+                on_disk_version = (json.load(_dvf) or {}).get('version')
+        except Exception as _dve:
+            logging.warning(f"[update] post-copy version.json read failed: {_dve}")
+        version_mismatch = bool(new_version and on_disk_version and on_disk_version != new_version)
+        if version_mismatch:
+            logging.warning(f"[update] post-copy version mismatch: on-disk {on_disk_version}, expected {new_version}")
+
+        partial = len(failed_files) > 0 or version_mismatch
         return jsonify({
             'success': True,
             'partial': partial,
+            'on_disk_version': on_disk_version,
+            'version_mismatch': version_mismatch,
             'message': (f'Update to {new_version} complete! Restarting in {restart_delay}s...'
                         if not partial else
                         f'Update to {new_version} partially applied — '
-                        f'{len(failed_files)} file(s) failed to write. Restarting in {restart_delay}s...'),
+                        f'{len(failed_files)} file(s) failed to write'
+                        f'{", on-disk version mismatch" if version_mismatch else ""}. '
+                        f'Restarting in {restart_delay}s...'),
             'updated_version': new_version,
             'update_method': update_method,
             'backup_path': backup_path,
