@@ -1013,7 +1013,16 @@ def upload_to_datastore(cluster_id, storage_name):
         else:
             # MK: Mar 2026 - safe error parsing, Proxmox sometimes returns HTML on 5xx
             try:
-                error_msg = response.json().get('errors', response.text)
+                pve = response.json()
+                errs = pve.get('errors')
+                # MK 2026-06-08 (#524 ccesario): PVE returns field errors as a dict
+                # (e.g. {'filename': 'invalid format - ...'} when a name carries chars
+                # it won't accept, like parentheses). Flatten it — handing the dict
+                # straight through showed up as "[object Object]" in the upload alert.
+                if isinstance(errs, dict):
+                    error_msg = '; '.join(f"{k}: {v}" for k, v in errs.items()) or pve.get('message') or 'Upload failed'
+                else:
+                    error_msg = errs or pve.get('message') or response.text or 'Upload failed'
             except Exception:
                 error_msg = response.text[:500] if response.text else 'Upload failed'
             logging.error(f"Upload to {storage_name} failed: HTTP {response.status_code} - {error_msg}")
