@@ -229,7 +229,7 @@ def update_user_preferences():
 
 
 @bp.route('/api/users/<username>/2fa', methods=['DELETE'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.users'])
 def admin_disable_2fa(username):
     """Admin: Disable 2FA for a user"""
     global users_db
@@ -253,7 +253,7 @@ def admin_disable_2fa(username):
 
 
 @bp.route('/api/users/<username>/password', methods=['PUT'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.users'])
 def admin_change_password(username):
     """Admin: Change password for any user
     
@@ -321,7 +321,7 @@ def admin_change_password(username):
 # ============================================
 
 @bp.route('/api/users', methods=['GET'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.users'])
 def get_users():
     """Get list of all users (admin only)"""
     users_db = load_users()
@@ -354,7 +354,7 @@ def get_users():
 # ============================================
 
 @bp.route('/api/security/locked-ips', methods=['GET'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['security.lockout.view'])
 def get_locked_ips():
     """Get list of currently locked IPs and usernames (admin only)
     
@@ -395,7 +395,7 @@ def get_locked_ips():
 
 
 @bp.route('/api/security/locked-ips/<ip_address>', methods=['DELETE'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['security.lockout.manage'])
 def unlock_ip(ip_address):
     # NS: admin-only endpoint to unlock IPs manually
     global login_attempts_by_ip
@@ -413,7 +413,7 @@ def unlock_ip(ip_address):
 
 
 @bp.route('/api/security/locked-users/<username>', methods=['DELETE'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['security.lockout.manage'])
 def unlock_user(username):
     """Unlock a specific username (admin only)
     
@@ -433,7 +433,7 @@ def unlock_user(username):
 
 
 @bp.route('/api/security/locked-ips', methods=['DELETE'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['security.lockout.manage'])
 def unlock_all_ips():
     """Unlock all IP addresses (admin only)"""
     global login_attempts_by_ip
@@ -448,7 +448,7 @@ def unlock_all_ips():
 
 
 @bp.route('/api/security/locked-users', methods=['DELETE'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['security.lockout.manage'])
 def unlock_all_users():
     """Unlock all usernames (admin only)
     
@@ -468,7 +468,7 @@ def unlock_all_users():
 # LW: Reset password expiry for all users - Dec 2025
 # NS: Requested by admins who want to force everyone to change passwords after a breach
 @bp.route('/api/security/password-expiry/reset-all', methods=['POST'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['security.lockout.manage'])
 def reset_all_password_expiry():
     """Reset password_changed_at for all users, forcing everyone to change passwords
     
@@ -667,7 +667,7 @@ def is_valid_role(role_id):
 
 
 @bp.route('/api/users', methods=['POST'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.users'])
 def create_user():
     """Create a new user (admin only)"""
     global users_db
@@ -757,7 +757,7 @@ def create_user():
     })
 
 @bp.route('/api/users/<username>', methods=['PUT'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.users'])
 def update_user(username):
     """Update a user (admin only)"""
     global users_db
@@ -855,7 +855,7 @@ def update_user(username):
     return jsonify({'success': True})
 
 @bp.route('/api/users/<username>', methods=['DELETE'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.users'])
 def delete_user(username):
     """Delete a user (admin only)"""
     global users_db
@@ -960,7 +960,7 @@ def get_tenants():
     return jsonify(result)
 
 @bp.route('/api/tenants', methods=['POST'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.tenants'])
 def create_tenant():
     """Create new tenant
     
@@ -1007,7 +1007,7 @@ def create_tenant():
     return jsonify({'success': True, 'tenant': tenants_db[tid]})
 
 @bp.route('/api/tenants/<tenant_id>', methods=['PUT'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.tenants'])
 def update_tenant(tenant_id):
     """Update tenant"""
     global tenants_db
@@ -1030,7 +1030,7 @@ def update_tenant(tenant_id):
     return jsonify({'success': True, 'tenant': tenants_db[tenant_id]})
 
 @bp.route('/api/tenants/<tenant_id>', methods=['DELETE'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.tenants'])
 def delete_tenant(tenant_id):
     """Delete tenant"""
     global tenants_db
@@ -1801,7 +1801,7 @@ def rm_pool(cluster_id, pool_id):
 # simple grouping for the user management UI
 
 @bp.route('/api/user-folders', methods=['GET'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.users'])
 def list_user_folders():
     db = get_db()
     try:
@@ -1812,7 +1812,7 @@ def list_user_folders():
 
 
 @bp.route('/api/user-folders', methods=['POST'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.users'])
 def create_user_folder():
     import uuid
     data = request.get_json() or {}
@@ -1833,7 +1833,7 @@ def create_user_folder():
 
 
 @bp.route('/api/user-folders/<folder_id>', methods=['PUT'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.users'])
 def update_user_folder(folder_id):
     data = request.get_json() or {}
     db = get_db()
@@ -1854,7 +1854,7 @@ def update_user_folder(folder_id):
 
 
 @bp.route('/api/user-folders/<folder_id>', methods=['DELETE'])
-@require_auth(roles=[ROLE_ADMIN])
+@require_auth(perms=['admin.users'])
 def delete_user_folder(folder_id):
     db = get_db()
     try:
