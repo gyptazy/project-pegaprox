@@ -6941,12 +6941,12 @@ def start_vnc_websocket_server(port=5001, ssl_cert=None, ssl_key=None, host='0.0
             # check perms from token
             users = load_users()
             user = users.get(token_data['user'], {})
-            user_perms = get_user_permissions(user)
-            if 'vm.console' not in user_perms and token_data['role'] != ROLE_ADMIN:
-                print(f"ERROR: User {token_data['user']} lacks vm.console permission")
-                await websocket.close(1002, "Permission denied")
-                return
             user['username'] = token_data['user']
+            # MK 2026-06-10 (#537 abyss1): the per-VM _console_authz gate below (H-1/H-2) is the
+            # authoritative check (cluster + per-VM vm.console via user_can_access_vm). The old
+            # coarse "global vm.console perm OR admin" pre-check here rejected Client-Portal users
+            # — they hold per-VM console access through the portal model, not a global RBAC perm —
+            # so the portal console hung at "Connecting…". Dropped; _console_authz still enforces it.
             print(f"User {token_data['user']} authenticated for VNC (ws_token)")
         elif session_id:
             session = validate_session(session_id)
@@ -6956,12 +6956,8 @@ def start_vnc_websocket_server(port=5001, ssl_cert=None, ssl_key=None, host='0.0
                 return
             users = load_users()
             user = users.get(session['user'], {})
-            user_perms = get_user_permissions(user)
-            if 'vm.console' not in user_perms and session['role'] != ROLE_ADMIN:
-                print(f"ERROR: User {session['user']} lacks vm.console permission")
-                await websocket.close(1002, "Permission denied")
-                return
             user['username'] = session['user']
+            # #537: per-VM _console_authz below is the authoritative gate (see ws_token note).
             print(f"User {session['user']} authenticated for VNC (session)")
         else:
             print("ERROR: No token or session provided")
