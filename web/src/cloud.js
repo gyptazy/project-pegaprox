@@ -384,6 +384,7 @@
                 { label: 'INFRASTRUCTURE', items: [
                     { id: 'clusters', label: 'Clusters', icon: 'Cloud' },
                     { id: 'nodes', label: 'Hosts', icon: 'Cpu' },
+                    { id: 'ha', label: 'High Availability', icon: 'Shield' },
                 ] },
                 { label: 'ACTIVITY', items: [{ id: 'tasks', label: 'Tasks', icon: 'ClipboardList' }] },
             ];
@@ -1197,6 +1198,89 @@
         }
 
         // ── shell (top-level entry) ────────────────────────────────
+        // ── High Availability (cloud-native) ───────────────────────
+        // NS 2026-06-11 — Cloud-skin per-cluster feature parity, phase 1. Reads the
+        // same /ha/status the classic layout uses, rendered as cloud cards + the
+        // fence-strategy banner. Self-fetches (HA isn't in the shell's prop bundle).
+        function CloudHA({ clusterId, t }) {
+            const { getAuthHeaders } = useAuth();
+            const [ha, setHa] = React.useState(null);
+            const [loading, setLoading] = React.useState(true);
+            const [err, setErr] = React.useState(null);
+            const load = React.useCallback(() => {
+                if (!clusterId) { setLoading(false); return; }
+                setLoading(true); setErr(null);
+                fetch(`/api/clusters/${clusterId}/ha/status`, { headers: getAuthHeaders() })
+                    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+                    .then(d => { setHa(d); setLoading(false); })
+                    .catch(e => { setErr(String(e && e.message || e)); setLoading(false); });
+            }, [clusterId]);
+            React.useEffect(() => { load(); }, [load]);
+
+            const sbp = (ha && ha.split_brain_prevention) || {};
+            const fs = sbp.fence_strategy || {};
+            const strat = fs.strategy || 'unknown';
+            const enabled = !!(ha && ha.enabled);
+            const health = (ha && ha.cluster_health) || {};
+            const installed = !!(ha && ha.self_fence_installed);
+            const bannerStyle = strat === 'wait'
+                ? { borderLeft: '3px solid #f59e0b', background: 'rgba(245,158,11,0.08)' }
+                : strat === 'quorum'
+                    ? { borderLeft: '3px solid #14b8a6', background: 'rgba(20,184,166,0.08)' }
+                    : { borderLeft: '3px solid #64748b', background: 'rgba(100,116,139,0.08)' };
+            const stratIcon = strat === 'wait' ? <Icons.AlertTriangle /> : strat === 'quorum' ? <Icons.Shield /> : <Icons.Activity />;
+            const kpis = [
+                { icon: enabled ? 'Shield' : 'XCircle', value: enabled ? (t('haEnabled') || 'Enabled') : (t('haDisabled') || 'Disabled'), label: t('cloud.haState') || 'HA state', accent: enabled ? '#22c55e' : '#64748b' },
+                { icon: sbp.have_quorum ? 'CheckCircle' : 'XCircle', value: sbp.have_quorum ? (t('quorumOk') || 'Quorum OK') : (t('quorumLost') || 'No quorum'), label: t('cloud.quorum') || 'Quorum', accent: sbp.have_quorum ? '#14b8a6' : '#ef4444' },
+                { icon: 'Server', value: installed ? (t('running') || 'Installed') : (t('notInstalled') || 'Not installed'), label: t('cloud.fenceAgents') || 'Self-fence agents', accent: installed ? '#6366f1' : '#f59e0b' },
+                { icon: 'Activity', value: `${health.online_nodes != null ? health.online_nodes : '—'} / ${health.total_nodes != null ? health.total_nodes : '—'}`, label: t('cloud.nodesOnline') || 'Hosts online', accent: '#0ea5e9' },
+            ];
+            return (
+                <div className="cloud-body">
+                    <CloudPageHeader
+                        title={t('cloud.ha') || 'High Availability'}
+                        sub={enabled ? (t('cloud.haOn') || 'Split-brain protection active') : (t('cloud.haOff') || 'High availability is disabled for this cluster')}
+                    >
+                        <button type="button" className="cloud-link-btn" onClick={load}><Icons.RefreshCw /> {t('refresh') || 'Refresh'}</button>
+                    </CloudPageHeader>
+                    {loading ? (
+                        <div className="cloud-card"><div className="cloud-empty">{t('loading') || 'Loading…'}</div></div>
+                    ) : err ? (
+                        <div className="cloud-card"><CloudEmpty icon="AlertTriangle" title={t('cloud.haLoadFail') || 'Could not load HA status'} text={err} /></div>
+                    ) : (
+                        <React.Fragment>
+                            {(fs.strategy || fs.reason) && (
+                                <div className="cloud-card" style={bannerStyle}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                                        <span style={{ display: 'inline-flex' }}>{stratIcon}</span>
+                                        <strong>{t('fenceStrategyLabel') || 'Fence strategy'}: <span style={{ textTransform: 'uppercase' }}>{strat}</span></strong>
+                                        {fs.expected_votes != null && <span style={{ marginLeft: 'auto', opacity: 0.7, fontSize: 12 }}>{fs.expected_votes} votes · qdevice: {fs.has_qdevice ? 'yes' : 'no'}</span>}
+                                    </div>
+                                    {sbp.fence_strategy_warning && <p style={{ fontSize: 13, margin: '4px 0' }}>{sbp.fence_strategy_warning}</p>}
+                                    {fs.reason && <p style={{ fontSize: 12, opacity: 0.8, margin: '2px 0' }}>{fs.reason}</p>}
+                                    {fs.detected_at && <p style={{ fontSize: 12, opacity: 0.7, margin: '2px 0' }}>{t('detectedAt') || 'Detected at'}: {fs.detected_at}</p>}
+                                </div>
+                            )}
+                            <div className="cloud-kpi-grid">
+                                {kpis.map((k, i) => <CloudKpiCard key={i} icon={k.icon} value={k.value} label={k.label} accent={k.accent} />)}
+                            </div>
+                            <div className="cloud-card">
+                                <CloudSectionTitle>{t('cloud.haConfig') || 'Configuration'}</CloudSectionTitle>
+                                <div className="cloud-util-breakdown">
+                                    <div className="cloud-util-row"><span>{t('quorumEnabled') || 'Quorum check'}</span><span>{sbp.quorum_enabled ? (t('enabled') || 'Enabled') : (t('disabled') || 'Disabled')}</span></div>
+                                    <div className="cloud-util-row"><span>{t('selfFence') || 'Self-fencing'}</span><span>{sbp.self_fence_enabled ? (t('enabled') || 'Enabled') : (t('disabled') || 'Disabled')}</span></div>
+                                    <div className="cloud-util-row"><span>{t('twoNodeMode') || '2-node mode'}</span><span>{sbp.two_node_mode ? 'Yes' : 'No'}</span></div>
+                                    <div className="cloud-util-row"><span>{t('storageHeartbeat') || 'Storage heartbeat'}</span><span>{sbp.storage_heartbeat_enabled ? (sbp.storage_heartbeat_path || (t('enabled') || 'Enabled')) : (t('disabled') || 'Disabled')}</span></div>
+                                    <div className="cloud-util-row"><span>{t('recoveryDelay') || 'Recovery delay'}</span><span>{sbp.recovery_delay != null ? sbp.recovery_delay + 's' : '—'}</span></div>
+                                    {sbp.pegaprox_vmid ? <div className="cloud-util-row"><span>PegaProx VM</span><span>#{sbp.pegaprox_vmid}</span></div> : null}
+                                </div>
+                            </div>
+                        </React.Fragment>
+                    )}
+                </div>
+            );
+        }
+
         // NS 2026-06-11 — sponsors show in every layout, Cloud included. Same slots
         // + OC button as the classic footer, just sized for the cloud content area.
         // Reuses the global SponsorSlot so the mirror/GitHub self-heal applies here too.
@@ -1304,6 +1388,7 @@
                 networks: T('cloud.networks') || 'Networks',
                 clusters: T('cloud.clustersTitle') || 'Clusters',
                 nodes: T('cloud.hosts') || 'Hosts',
+                ha: T('cloud.ha') || 'High Availability',
                 tasks: T('cloud.tasks') || 'Tasks',
                 users: T('cloud.users') || 'Users',
                 settings: T('cloud.settings') || 'Settings',
@@ -1350,6 +1435,9 @@
                         break;
                     case 'nodes':
                         body = <CloudNodes metrics={clusterMetrics} act={act} isAdmin={isAdmin} t={T} />;
+                        break;
+                    case 'ha':
+                        body = <CloudHA clusterId={cid} t={T} />;
                         break;
                     case 'tasks':
                         body = <CloudTasks tasks={tasks} t={T} />;
