@@ -5711,9 +5711,14 @@ def _ssh_pipe_transfer(pve_mgr, task, esxi_host, esxi_user, esxi_pass, datastore
             dl_out = str(out_dl or '').strip()
             task.log(f"  HTTPS: {dl_out[-250:]}")
 
-            bytes_m = re.search(r'(\d+) bytes', dl_out)
-            if bytes_m:
-                downloaded = int(bytes_m.group(1))
+            # MK 2026-06-11 (#538 oetti77): dd can print several "N bytes copied"
+            # lines (SIGUSR1 progress / final summary), so take the LAST match —
+            # re.search() grabbed the FIRST progress block and undercounted a
+            # finished transfer, which tripped a false "incomplete" and made the
+            # cleanup delete a fully-written volume.
+            _bytes_all = re.findall(r'(\d+) bytes', dl_out)
+            if _bytes_all:
+                downloaded = int(_bytes_all[-1])
             if downloaded >= flat_size * 0.9:
                 dl_success = True
                 task.log(f"  HTTPS OK: {downloaded/(1024**3):.2f} GB")
@@ -5758,9 +5763,9 @@ def _ssh_pipe_transfer(pve_mgr, task, esxi_host, esxi_user, esxi_pass, datastore
             ssh_out = str(out_s or '').strip()
             task.log(f"  SSH: {ssh_out[-250:]}")
 
-            bytes_m2 = re.search(r'(\d+) bytes', ssh_out)
-            if bytes_m2:
-                downloaded = int(bytes_m2.group(1))
+            _bytes_all2 = re.findall(r'(\d+) bytes', ssh_out)  # #538: last line, not first
+            if _bytes_all2:
+                downloaded = int(_bytes_all2[-1])
             if downloaded >= flat_size * 0.9:
                 dl_success = True
                 task.log(f"  SSH OK: {downloaded/(1024**3):.2f} GB")
@@ -5788,8 +5793,8 @@ def _ssh_pipe_transfer(pve_mgr, task, esxi_host, esxi_user, esxi_pass, datastore
                     f"cat {dd_log3}; rm -f {dd_log3}", timeout=86400)
                 dd_out = str(out_dd or '').strip()
                 task.log(f"  SSHFS: {dd_out[-200:]}")
-                bytes_m3 = re.search(r'(\d+) bytes', dd_out)
-                downloaded = int(bytes_m3.group(1)) if bytes_m3 else 0
+                _bytes_all3 = re.findall(r'(\d+) bytes', dd_out)  # #538: last, not first
+                downloaded = int(_bytes_all3[-1]) if _bytes_all3 else 0
                 if downloaded >= flat_size * 0.9:
                     dl_success = True
                 else:
