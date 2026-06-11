@@ -389,6 +389,7 @@
                 ] },
                 { label: 'DATA PROTECTION', items: [
                     { id: 'backups', label: 'Backups', icon: 'Archive' },
+                    { id: 'replication', label: 'Replication', icon: 'Copy' },
                     { id: 'pbs', label: 'Backup Servers', icon: 'Server' },
                     { id: 'siterecovery', label: 'Site Recovery', icon: 'LifeBuoy' },
                 ] },
@@ -1557,6 +1558,60 @@
             );
         }
 
+        // ── Replication (native + cross-cluster) ───────────────────
+        function CloudReplication({ clusterId, t }) {
+            const native = useCloudData(clusterId ? `/api/clusters/${clusterId}/datacenter/replication` : null);
+            const cross = useCloudData('/api/cross-cluster-replications');
+            const njobs = Array.isArray(native.data) ? native.data : [];
+            const cjobs = Array.isArray(cross.data) ? cross.data : [];
+            const failing = njobs.filter(j => Number(j.fail_count) > 0 || (j.error && String(j.error).trim())).length;
+            const kpis = [
+                { icon: 'Copy', value: njobs.length, label: t('cloud.replNative') || 'Native jobs', accent: '#6366f1' },
+                { icon: 'Cloud', value: cjobs.length, label: t('cloud.replCross') || 'Cross-cluster', accent: '#14b8a6' },
+                { icon: failing ? 'XCircle' : 'CheckCircle', value: failing, label: t('cloud.replFailing') || 'Failing', accent: failing ? '#ef4444' : '#22c55e' },
+            ];
+            return (
+                <div className="cloud-body">
+                    <CloudPageHeader title={t('cloud.replication') || 'Replication'} sub={t('cloud.replicationSub') || 'Storage replication jobs'}>
+                        <button type="button" className="cloud-link-btn" onClick={() => { native.reload(); cross.reload(); }}><Icons.RefreshCw /> {t('refresh') || 'Refresh'}</button>
+                    </CloudPageHeader>
+                    <CloudSectionState loading={native.loading} err={native.err} empty={!njobs.length && !cjobs.length} emptyIcon="Copy" emptyTitle={t('cloud.noRepl') || 'No replication jobs'} t={t}>
+                        <div className="cloud-kpi-grid">{kpis.map((k, i) => <CloudKpiCard key={i} icon={k.icon} value={k.value} label={k.label} accent={k.accent} />)}</div>
+                        {njobs.length ? (
+                            <div className="cloud-card cloud-table-card">
+                                {cloudHead({ icon: <Icons.Copy />, title: t('cloud.replNative') || 'Native replication', count: njobs.length })}
+                                <div className="cloud-table-scroll"><table className="cloud-table">
+                                    <thead><tr><th>{t('cloud.colJob') || 'Job'}</th><th>{t('cloud.colTarget') || 'Target'}</th><th>{t('cloud.colSchedule') || 'Schedule'}</th><th>{t('cloud.colLastSync') || 'Last sync'}</th><th>{t('cloud.colState') || 'State'}</th></tr></thead>
+                                    <tbody>{njobs.map((j, i) => (<tr className="cloud-table-row cloud-table-row-static" key={j.id || i}>
+                                        <td className="cloud-table-mono">{j.id || '—'}</td>
+                                        <td className="cloud-table-mono">{j.target || '—'}</td>
+                                        <td className="cloud-table-mono">{j.schedule || '—'}</td>
+                                        <td>{j.last_sync ? cloudRelTime(j.last_sync) : '—'}</td>
+                                        <td>{(j.error && String(j.error).trim()) ? <span className="cloud-chip cloud-chip-err">error</span> : (Number(j.disable) === 1 ? <CloudConnChip connected={false} t={t} /> : <CloudConnChip connected={true} t={t} />)}</td>
+                                    </tr>))}</tbody>
+                                </table></div>
+                            </div>
+                        ) : null}
+                        {cjobs.length ? (
+                            <div className="cloud-card cloud-table-card">
+                                {cloudHead({ icon: <Icons.Cloud />, title: t('cloud.replCross') || 'Cross-cluster', count: cjobs.length })}
+                                <div className="cloud-table-scroll"><table className="cloud-table">
+                                    <thead><tr><th>{t('cloud.colName') || 'Name'}</th><th>{t('cloud.colSource') || 'Source'}</th><th>{t('cloud.colTarget') || 'Target'}</th><th>{t('cloud.colSchedule') || 'Schedule'}</th><th>{t('cloud.colStatus') || 'Status'}</th></tr></thead>
+                                    <tbody>{cjobs.map((j, i) => (<tr className="cloud-table-row cloud-table-row-static" key={j.id || i}>
+                                        <td>{j.name || j.id || '—'}</td>
+                                        <td className="cloud-table-mono">{j.source_cluster || '—'}</td>
+                                        <td className="cloud-table-mono">{j.target_cluster || '—'}</td>
+                                        <td className="cloud-table-mono">{j.schedule || '—'}</td>
+                                        <td><span className="cloud-chip cloud-chip-soft">{j.status || (j.enabled ? 'enabled' : 'disabled')}</span></td>
+                                    </tr>))}</tbody>
+                                </table></div>
+                            </div>
+                        ) : null}
+                    </CloudSectionState>
+                </div>
+            );
+        }
+
         // ── High Availability (cloud-native) ───────────────────────
         // NS 2026-06-11 — Cloud-skin per-cluster feature parity, phase 1. Reads the
         // same /ha/status the classic layout uses, rendered as cloud cards + the
@@ -1753,6 +1808,7 @@
                 sdn: T('cloud.sdn') || 'SDN',
                 firewall: T('cloud.firewall') || 'Firewall',
                 backups: T('cloud.backups') || 'Backups',
+                replication: T('cloud.replication') || 'Replication',
                 pbs: T('cloud.pbs') || 'Backup Servers',
                 siterecovery: T('cloud.siteRecovery') || 'Site Recovery',
                 monitoring: T('cloud.monitoring') || 'Monitoring',
@@ -1820,6 +1876,9 @@
                         break;
                     case 'backups':
                         body = <CloudBackups clusterId={cid} t={T} />;
+                        break;
+                    case 'replication':
+                        body = <CloudReplication clusterId={cid} t={T} />;
                         break;
                     case 'pbs':
                         body = <CloudPBS t={T} />;
