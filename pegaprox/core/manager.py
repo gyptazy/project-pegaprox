@@ -2935,6 +2935,27 @@ class PegaProxManager:
                 # Genuine failure with ceph deployed — extract the probe-side message
                 tail = out.split('CEPH_CMD_FAILED', 1)[1].strip()
                 short = (tail.replace('\n', ' ').strip())[:200]
+                # MK Jun 2026 (#403 proxforge): ceph-common is often installed
+                # cluster-wide on nodes that don't actually run ceph. `ceph -s`
+                # then fails because there's no conf/monmap here — that's "not
+                # deployed", NOT a degraded cluster. Returning 'unknown' made the
+                # rolling-update log shout ✗ and then wait 120s per node for a
+                # cluster that has no ceph. Treat the no-config signatures as
+                # not-deployed (None); a real ceph that's merely unreachable still
+                # falls through to 'unknown' below so we keep surfacing that.
+                low = short.lower()
+                no_cluster = (
+                    'conf_read_file' in low
+                    or 'rados object not found' in low
+                    or 'get_monmap_and_config failed' in low
+                    or 'unable to read conf' in low
+                    or 'did not load config file' in low
+                    or 'unable to find any mon' in low
+                    or ('monclient' in low and 'fail' in low)
+                )
+                if no_cluster:
+                    self.logger.debug(f"[CEPH] {via_node}: ceph binary present but no cluster config here → not deployed ({short})")
+                    return None
                 self.logger.warning(f"[CEPH] probe failed via {via_node}: {short}")
                 return {'status': 'unknown', 'osd_up': 0, 'osd_in': 0, 'pgs': '',
                         'warnings': [f'ceph probe failed: {short or "no detail"}']}
