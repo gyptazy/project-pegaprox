@@ -372,9 +372,26 @@ class PegaProxDB:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 clusters TEXT DEFAULT '[]',
-                created_at TEXT
+                created_at TEXT,
+                quota_max_vms INTEGER DEFAULT 0,
+                quota_max_cores INTEGER DEFAULT 0,
+                quota_max_memory_gb INTEGER DEFAULT 0,
+                quota_enforcement TEXT DEFAULT 'block'
             )
         ''')
+        # NS #502 — per-tenant quota columns for existing tenants tables (0 = unlimited)
+        try:
+            cursor.execute("PRAGMA table_info(tenants)")
+            _tcols = [c[1] for c in cursor.fetchall()]
+            for _cn, _cd in (('quota_max_vms', 'INTEGER DEFAULT 0'),
+                             ('quota_max_cores', 'INTEGER DEFAULT 0'),
+                             ('quota_max_memory_gb', 'INTEGER DEFAULT 0'),
+                             ('quota_enforcement', "TEXT DEFAULT 'block'")):
+                if _cn not in _tcols:
+                    cursor.execute(f"ALTER TABLE tenants ADD COLUMN {_cn} {_cd}")
+                    logging.info(f"Added {_cn} column to tenants table")
+        except Exception as _qe:
+            logging.error(f"tenant quota column migration failed: {_qe}")
         
         # Cluster Groups - organize clusters into collapsible groups with tenant assignment
         # NS: Jan 2026 - requested by user for better organization
@@ -4014,10 +4031,20 @@ class PegaProxDB:
         cursor = self.conn.cursor()
         cursor.execute('SELECT * FROM tenants')
         
+        def _q(row, k, d):
+            try:
+                v = row[k]
+                return v if v is not None else d
+            except (IndexError, KeyError):
+                return d
         return [{
             'id': row['id'],
             'name': row['name'],
             'clusters': json.loads(row['clusters'] or '[]'),
+            'quota_max_vms': _q(row, 'quota_max_vms', 0),
+            'quota_max_cores': _q(row, 'quota_max_cores', 0),
+            'quota_max_memory_gb': _q(row, 'quota_max_memory_gb', 0),
+            'quota_enforcement': _q(row, 'quota_enforcement', 'block') or 'block',
         } for row in cursor.fetchall()]
     
     def save_tenant(self, tenant_id: str, data: dict):
@@ -4026,13 +4053,19 @@ class PegaProxDB:
         now = datetime.now().isoformat()
         
         cursor.execute('''
-            INSERT OR REPLACE INTO tenants (id, name, clusters, created_at)
-            VALUES (?, ?, ?, COALESCE((SELECT created_at FROM tenants WHERE id = ?), ?))
+            INSERT OR REPLACE INTO tenants (id, name, clusters, created_at,
+                quota_max_vms, quota_max_cores, quota_max_memory_gb, quota_enforcement)
+            VALUES (?, ?, ?, COALESCE((SELECT created_at FROM tenants WHERE id = ?), ?),
+                ?, ?, ?, ?)
         ''', (
             tenant_id,
             data.get('name', ''),
             json.dumps(data.get('clusters', [])),
-            tenant_id, now
+            tenant_id, now,
+            int(data.get('quota_max_vms', 0) or 0),
+            int(data.get('quota_max_cores', 0) or 0),
+            int(data.get('quota_max_memory_gb', 0) or 0),
+            (data.get('quota_enforcement') or 'block'),
         ))
         self.conn.commit()
     

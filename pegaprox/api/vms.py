@@ -6580,10 +6580,12 @@ def get_hardware_options():
             'machine_types': [
                 {'value': '', 'label': 'Default'},
                 {'value': 'q35', 'label': 'q35 (Latest)'},
+                {'value': 'pc-q35-11.0+pve1', 'label': 'q35 11.0+pve1'},
                 {'value': 'pc-q35-10.1', 'label': 'q35 10.1'},
                 {'value': 'pc-q35-9.2+pve1', 'label': 'q35 9.2+pve1'},
                 {'value': 'pc-q35-8.2', 'label': 'q35 8.2'},
                 {'value': 'i440fx', 'label': 'i440fx (Latest)'},
+                {'value': 'pc-i440fx-11.0+pve1', 'label': 'i440fx 11.0+pve1'},
                 {'value': 'pc-i440fx-10.1', 'label': 'i440fx 10.1'},
                 {'value': 'pc-i440fx-9.2+pve1', 'label': 'i440fx 9.2+pve1'},
                 {'value': 'pc-i440fx-8.2', 'label': 'i440fx 8.2'},
@@ -9410,6 +9412,20 @@ def create_vm_api(cluster_id, node):
 
     vm_config = request.json or {}
 
+    # NS #502 — tenant quota pre-flight (fail-open: a quota bug must never block a create)
+    try:
+        from pegaprox.utils.rbac import check_tenant_quota, DEFAULT_TENANT_ID
+        _qu = load_users().get(request.session.get('user', ''), {})
+        _tid = _qu.get('tenant_id') or DEFAULT_TENANT_ID
+        _qcores = int(vm_config.get('cores') or 1) * int(vm_config.get('sockets') or 1)
+        _qmem = float(vm_config.get('memory') or 0) / 1024.0  # MB → GB
+        _qchk = check_tenant_quota(_tid, add_cores=_qcores, add_mem_gb=_qmem, add_vms=1)
+        if not _qchk['ok'] and _qchk.get('enforce') == 'block':
+            return jsonify({'error': f"Tenant quota exceeded ({', '.join(_qchk['violations'])}) — "
+                            f"usage {_qchk['usage']} vs quota {_qchk['quota']}", 'quota': _qchk}), 403
+    except Exception as _qe:
+        logging.debug(f"[quota] qemu pre-flight skipped: {_qe}")
+
     result = manager.create_vm(node, vm_config)
 
     if result.get('success'):
@@ -9442,7 +9458,21 @@ def create_container_api(cluster_id, node):
     
     manager = cluster_managers[cluster_id]
     ct_config = request.json or {}
-    
+
+    # NS #502 — tenant quota pre-flight (fail-open)
+    try:
+        from pegaprox.utils.rbac import check_tenant_quota, DEFAULT_TENANT_ID
+        _qu = load_users().get(request.session.get('user', ''), {})
+        _tid = _qu.get('tenant_id') or DEFAULT_TENANT_ID
+        _qcores = int(ct_config.get('cores') or 1)
+        _qmem = float(ct_config.get('memory') or 0) / 1024.0  # MB → GB
+        _qchk = check_tenant_quota(_tid, add_cores=_qcores, add_mem_gb=_qmem, add_vms=1)
+        if not _qchk['ok'] and _qchk.get('enforce') == 'block':
+            return jsonify({'error': f"Tenant quota exceeded ({', '.join(_qchk['violations'])}) — "
+                            f"usage {_qchk['usage']} vs quota {_qchk['quota']}", 'quota': _qchk}), 403
+    except Exception as _qe:
+        logging.debug(f"[quota] lxc pre-flight skipped: {_qe}")
+
     result = manager.create_container(node, ct_config)
     
     if result.get('success'):

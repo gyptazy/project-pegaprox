@@ -935,6 +935,10 @@ def get_tenants():
                 'name': t.get('name', tid),
                 'clusters': t.get('clusters', []),
                 'created': t.get('created', ''),
+                'quota_max_vms': t.get('quota_max_vms', 0),
+                'quota_max_cores': t.get('quota_max_cores', 0),
+                'quota_max_memory_gb': t.get('quota_max_memory_gb', 0),
+                'quota_enforcement': t.get('quota_enforcement', 'block'),
                 'user_count': sum(1 for u in load_users().values() if u.get('tenant_id') == tid)
             })
         return jsonify(result)
@@ -955,6 +959,10 @@ def get_tenants():
             'name': t.get('name', tid),
             'clusters': t.get('clusters', []),
             'created': t.get('created', ''),
+            'quota_max_vms': t.get('quota_max_vms', 0),
+            'quota_max_cores': t.get('quota_max_cores', 0),
+            'quota_max_memory_gb': t.get('quota_max_memory_gb', 0),
+            'quota_enforcement': t.get('quota_enforcement', 'block'),
             'user_count': sum(1 for u in users.values() if u.get('tenant_id') == tid)
         })
     
@@ -1000,6 +1008,11 @@ def create_tenant():
         'name': name,
         'clusters': clusters,
         'created': datetime.now().isoformat(),
+        # NS #502 — resource quotas (0 = unlimited); enforcement 'block' | 'warn'
+        'quota_max_vms': int(data.get('quota_max_vms', 0) or 0),
+        'quota_max_cores': int(data.get('quota_max_cores', 0) or 0),
+        'quota_max_memory_gb': int(data.get('quota_max_memory_gb', 0) or 0),
+        'quota_enforcement': data.get('quota_enforcement') or 'block',
     }
     
     save_tenants(tenants_db)
@@ -1024,11 +1037,31 @@ def update_tenant(tenant_id):
         tenants_db[tenant_id]['name'] = data['name']
     if 'clusters' in data:
         tenants_db[tenant_id]['clusters'] = data['clusters']
-    
+    # NS #502 — quota fields
+    for _qk in ('quota_max_vms', 'quota_max_cores', 'quota_max_memory_gb'):
+        if _qk in data:
+            try:
+                tenants_db[tenant_id][_qk] = int(data[_qk] or 0)
+            except (ValueError, TypeError):
+                tenants_db[tenant_id][_qk] = 0
+    if 'quota_enforcement' in data:
+        tenants_db[tenant_id]['quota_enforcement'] = data['quota_enforcement'] or 'block'
+
     save_tenants(tenants_db)
     log_audit(request.session['user'], 'tenant.updated', f"Updated tenant: {tenant_id}")
     
     return jsonify({'success': True, 'tenant': tenants_db[tenant_id]})
+
+@bp.route('/api/tenants/<tenant_id>/quota', methods=['GET'])
+@require_auth(perms=['admin.tenants'])
+def get_tenant_quota(tenant_id):
+    """#502 — live resource usage vs configured quota for a tenant"""
+    try:
+        from pegaprox.utils.rbac import check_tenant_quota
+        return jsonify(check_tenant_quota(tenant_id, add_cores=0, add_mem_gb=0, add_vms=0, force=True))
+    except Exception as e:
+        logging.error(f"tenant quota fetch failed: {e}")
+        return jsonify({'usage': {}, 'quota': {}, 'enforce': 'block'})
 
 @bp.route('/api/tenants/<tenant_id>', methods=['DELETE'])
 @require_auth(perms=['admin.tenants'])

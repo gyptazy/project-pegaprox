@@ -594,6 +594,9 @@
             const [tenants, setTenants] = useState([]);
             const [showAddTenant, setShowAddTenant] = useState(false);
             const [newTenant, setNewTenant] = useState({ name: '', clusters: [], groups: [] });
+            const [tenantUsage, setTenantUsage] = useState(null);  // NS #502 — live usage for the edit modal
+            const [chargeback, setChargeback] = useState(null);  // NS #502b — chargeback statement data
+            const [chargebackTenant, setChargebackTenant] = useState(null);  // NS #502b — tenant being viewed
             const [editingTenant, setEditingTenant] = useState(null);
             const [clusters, setClusters] = useState([]);  // for tenant cluster dropdown
             
@@ -3235,12 +3238,38 @@
                                                         </td>
                                                         <td className="px-4 py-3 text-sm text-gray-400">
                                                             {tenant.clusters.length === 0 ? 'All clusters' : tenant.clusters.length + ' clusters'}
+                                                            {(tenant.quota_max_vms > 0 || tenant.quota_max_cores > 0 || tenant.quota_max_memory_gb > 0) && (
+                                                                <div className="text-xs text-gray-600 mt-0.5">
+                                                                    {t('quota') || 'Quota'}: {tenant.quota_max_vms > 0 ? `${tenant.quota_max_vms} VMs ` : ''}{tenant.quota_max_cores > 0 ? `${tenant.quota_max_cores}c ` : ''}{tenant.quota_max_memory_gb > 0 ? `${tenant.quota_max_memory_gb}GB` : ''}
+                                                                </div>
+                                                            )}
                                                         </td>
                                                         <td className="px-4 py-3 text-sm text-gray-400">{tenant.user_count || 0}</td>
                                                         <td className="px-4 py-3 text-right">
                                                             <div className="flex items-center justify-end gap-2">
                                                                 <button
-                                                                    onClick={() => setEditingTenant({...tenant})}
+                                                                    onClick={async () => {
+                                                                        setChargebackTenant(tenant);  // NS #502b — open chargeback
+                                                                        setChargeback(null);
+                                                                        try {
+                                                                            const r = await fetch(`${API_URL}/tenants/${tenant.id}/chargeback?days=30`, { credentials: 'include', headers: getAuthHeaders() });
+                                                                            if (r.ok) setChargeback(await r.json());
+                                                                        } catch (e) { /* best-effort */ }
+                                                                    }}
+                                                                    className="p-1.5 text-gray-400 hover:text-white hover:bg-proxmox-border rounded"
+                                                                    title={t('chargeback') || 'Chargeback'}
+                                                                >
+                                                                    <Icons.DollarSign className="w-4 h-4" />
+                                                                </button>
+                                                                <button
+                                                                    onClick={async () => {
+                                                                        setEditingTenant({...tenant});
+                                                                        setTenantUsage(null);  // NS #502 — load live usage
+                                                                        try {
+                                                                            const r = await fetch(`${API_URL}/tenants/${tenant.id}/quota`, { credentials: 'include', headers: getAuthHeaders() });
+                                                                            if (r.ok) setTenantUsage(await r.json());
+                                                                        } catch (e) { /* usage is best-effort */ }
+                                                                    }}
                                                                     className="p-1.5 text-gray-400 hover:text-white hover:bg-proxmox-border rounded"
                                                                     title={t('edit') || 'Edit'}
                                                                 >
@@ -3321,8 +3350,44 @@
                                                             ))}
                                                         </div>
                                                     </div>
+                                                    {/* NS #502 — resource quotas (0 = unlimited) */}
+                                                    <div>
+                                                        <label className="block text-sm text-gray-400 mb-1">{t('quotas') || 'Resource Quotas'} <span className="text-xs text-gray-600">({t('quotaZeroHint') || '0 = unlimited'})</span></label>
+                                                        {tenantUsage && tenantUsage.usage && tenantUsage.usage.vms !== undefined && (
+                                                            <p className="text-xs text-gray-500 mb-2">{t('currentUsage') || 'Current usage'}: {tenantUsage.usage.vms} VMs · {tenantUsage.usage.cores} {t('cores') || 'cores'} · {tenantUsage.usage.memory_gb} GB</p>
+                                                        )}
+                                                        <div className="grid grid-cols-3 gap-2">
+                                                            <div>
+                                                                <label className="block text-xs text-gray-500 mb-1">{t('maxVms') || 'Max VMs'}</label>
+                                                                <input type="number" min="0" value={editingTenant.quota_max_vms || 0}
+                                                                    onChange={e => setEditingTenant({...editingTenant, quota_max_vms: parseInt(e.target.value) || 0})}
+                                                                    className="w-full px-2 py-1.5 bg-proxmox-dark border border-proxmox-border rounded text-white text-sm" />
+                                                            </div>
+                                                            <div>
+                                                                <label className="block text-xs text-gray-500 mb-1">{t('maxCores') || 'Max Cores'}</label>
+                                                                <input type="number" min="0" value={editingTenant.quota_max_cores || 0}
+                                                                    onChange={e => setEditingTenant({...editingTenant, quota_max_cores: parseInt(e.target.value) || 0})}
+                                                                    className="w-full px-2 py-1.5 bg-proxmox-dark border border-proxmox-border rounded text-white text-sm" />
+                                                            </div>
+                                                            <div>
+                                                                <label className="block text-xs text-gray-500 mb-1">{t('maxMemoryGb') || 'Max RAM (GB)'}</label>
+                                                                <input type="number" min="0" value={editingTenant.quota_max_memory_gb || 0}
+                                                                    onChange={e => setEditingTenant({...editingTenant, quota_max_memory_gb: parseInt(e.target.value) || 0})}
+                                                                    className="w-full px-2 py-1.5 bg-proxmox-dark border border-proxmox-border rounded text-white text-sm" />
+                                                            </div>
+                                                        </div>
+                                                        <div className="mt-2">
+                                                            <label className="block text-xs text-gray-500 mb-1">{t('quotaEnforcement') || 'When exceeded'}</label>
+                                                            <select value={editingTenant.quota_enforcement || 'block'}
+                                                                onChange={e => setEditingTenant({...editingTenant, quota_enforcement: e.target.value})}
+                                                                className="w-full px-2 py-1.5 bg-proxmox-dark border border-proxmox-border rounded text-white text-sm">
+                                                                <option value="block">{t('quotaBlock') || 'Block new VMs'}</option>
+                                                                <option value="warn">{t('quotaWarn') || 'Warn only (allow)'}</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
                                                 </div>
-                                                
+
                                                 <div className="flex gap-2 mt-6">
                                                     <button
                                                         onClick={async () => {
@@ -3333,7 +3398,11 @@
                                                                     headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
                                                                     body: JSON.stringify({
                                                                         name: editingTenant.name,
-                                                                        clusters: editingTenant.clusters || []
+                                                                        clusters: editingTenant.clusters || [],
+                                                                        quota_max_vms: editingTenant.quota_max_vms || 0,
+                                                                        quota_max_cores: editingTenant.quota_max_cores || 0,
+                                                                        quota_max_memory_gb: editingTenant.quota_max_memory_gb || 0,
+                                                                        quota_enforcement: editingTenant.quota_enforcement || 'block'
                                                                     })
                                                                 });
                                                                 if(r.ok) {
@@ -3360,9 +3429,59 @@
                                             </div>
                                         </div>
                                     )}
+                                    {/* NS #502b — chargeback statement modal */}
+                                    {chargebackTenant && (
+                                        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setChargebackTenant(null)}>
+                                            <div className="bg-proxmox-darker border border-proxmox-border rounded-xl p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                                                <div className="flex justify-between items-start mb-4">
+                                                    <div>
+                                                        <h3 className="text-lg font-semibold text-white">{t('chargeback') || 'Chargeback'}: {chargebackTenant.name}</h3>
+                                                        {chargeback && (
+                                                            <p className="text-sm text-gray-400">{t('monthlyEstimate') || 'Monthly estimate'}: <span className="text-proxmox-orange font-semibold">{chargeback.monthly_total} {chargeback.currency}</span> <span className="text-xs text-gray-600">({t('basedOnLast') || 'based on last'} {chargeback.days}d)</span></p>
+                                                        )}
+                                                    </div>
+                                                    <button onClick={() => setChargebackTenant(null)} className="p-1 text-gray-400 hover:text-white"><Icons.X className="w-5 h-5" /></button>
+                                                </div>
+                                                {!chargeback ? (
+                                                    <p className="text-sm text-gray-500 py-6 text-center">{t('loading') || 'Loading...'}</p>
+                                                ) : (
+                                                    <div className="space-y-4">
+                                                        <div className="space-y-1">
+                                                            {(chargeback.by_cluster || []).map(c => (
+                                                                <div key={c.cluster_id} className="flex justify-between text-sm bg-proxmox-dark rounded px-3 py-2">
+                                                                    <span className="text-gray-300">{c.cluster_name} <span className="text-xs text-gray-500">({c.vm_count} VMs{c.enough_data ? '' : ' · ' + (t('noData') || 'no data')})</span></span>
+                                                                    <span className="text-gray-200">{c.monthly_subtotal} {chargeback.currency}/mo</span>
+                                                                </div>
+                                                            ))}
+                                                            {(chargeback.by_cluster || []).length === 0 && <p className="text-sm text-gray-500">{t('noClustersForTenant') || 'No clusters assigned to this tenant.'}</p>}
+                                                        </div>
+                                                        {(chargeback.rows || []).length > 0 && (
+                                                            <div>
+                                                                <div className="text-xs text-gray-500 uppercase mb-1">{t('topVmsByCost') || 'Top VMs by cost'}</div>
+                                                                <table className="w-full text-sm">
+                                                                    <tbody className="divide-y divide-proxmox-border">
+                                                                        {(chargeback.rows || []).slice(0, 10).map(r => (
+                                                                            <tr key={r.cluster_id + ':' + r.vmid}>
+                                                                                <td className="py-1.5 text-gray-300">{r.name || r.vmid} <span className="text-xs text-gray-600">{r.cluster_name}</span></td>
+                                                                                <td className="py-1.5 text-right text-gray-400">{r.monthly_total} {chargeback.currency}/mo</td>
+                                                                            </tr>
+                                                                        ))}
+                                                                    </tbody>
+                                                                </table>
+                                                            </div>
+                                                        )}
+                                                        <div className="flex justify-end gap-2 pt-2">
+                                                            <a href={`${API_URL}/tenants/${chargebackTenant.id}/chargeback?days=30&format=csv`} target="_blank" rel="noopener" className="px-4 py-2 bg-proxmox-dark border border-proxmox-border hover:bg-proxmox-hover rounded-lg text-sm text-gray-300">{t('downloadCsv') || 'Download CSV'}</a>
+                                                            <button onClick={() => setChargebackTenant(null)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm">{t('close') || 'Close'}</button>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
-                            
+
                             {/* Cluster Groups Tab - NS Jan 2026 */}
                             {activeTab === 'groups' && (
                                 <div className="space-y-4">

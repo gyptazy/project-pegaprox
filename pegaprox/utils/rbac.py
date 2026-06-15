@@ -360,6 +360,60 @@ def filter_clusters_for_user(clusters: dict, user: dict) -> dict:
     return {k: v for k, v in clusters.items() if k in allowed}
 
 
+def check_tenant_quota(tenant_id, add_cores=0, add_mem_gb=0, add_vms=1, force=False):
+    """#502 — sum a tenant's current resource usage across its clusters and decide
+    whether adding (add_cores, add_mem_gb, add_vms) would exceed its quota.
+    Returns {'ok', 'enforce', 'violations', 'usage', 'quota'}. FAIL-OPEN: any error
+    returns ok=True so a quota bug can never block a legitimate VM create.
+    force=True computes usage even when no quota is set (for the usage display)."""
+    try:
+        global tenants_db
+        # NS #502 — always refresh: the cached global goes stale after a quota edit,
+        # and get_user_clusters() below reads the same global for cluster resolution.
+        tenants_db = load_tenants()
+        t = (tenants_db or {}).get(tenant_id) or {}
+        qv = int(t.get('quota_max_vms', 0) or 0)
+        qc = int(t.get('quota_max_cores', 0) or 0)
+        qm = int(t.get('quota_max_memory_gb', 0) or 0)
+        enforce = t.get('quota_enforcement') or 'block'
+        if not force and qv <= 0 and qc <= 0 and qm <= 0:
+            return {'ok': True, 'enforce': enforce, 'violations': [], 'usage': {}, 'quota': {}}
+        allowed = get_user_clusters({'role': ROLE_VIEWER, 'tenant_id': tenant_id})  # None = all clusters
+        from pegaprox.globals import cluster_managers
+        used_vms = 0
+        used_cores = 0
+        used_mem = 0.0
+        for cid, mgr in cluster_managers.items():
+            if allowed is not None and cid not in allowed:
+                continue
+            try:
+                vms = mgr.get_vm_resources() if hasattr(mgr, 'get_vm_resources') else []
+            except Exception:
+                vms = []
+            for vm in (vms or []):
+                used_vms += 1
+                used_cores += int(vm.get('maxcpu') or vm.get('cpus') or vm.get('cores') or 0)
+                try:
+                    used_mem += float(vm.get('maxmem') or 0) / (1024.0 ** 3)
+                except (ValueError, TypeError):
+                    pass
+        violations = []
+        if qv > 0 and used_vms + add_vms > qv:
+            violations.append('vms')
+        if qc > 0 and used_cores + add_cores > qc:
+            violations.append('cores')
+        if qm > 0 and used_mem + add_mem_gb > qm:
+            violations.append('memory')
+        return {
+            'ok': not violations, 'enforce': enforce, 'violations': violations,
+            'usage': {'vms': used_vms, 'cores': used_cores, 'memory_gb': round(used_mem, 1)},
+            'quota': {'vms': qv, 'cores': qc, 'memory_gb': qm},
+        }
+    except Exception as e:
+        logging.warning(f"[quota] check failed, allowing create (fail-open): {e}")
+        return {'ok': True, 'enforce': 'warn', 'violations': [], 'usage': {}, 'quota': {}}
+
+
 # =============================================================================
 # VM-LEVEL ACCESS CONTROL
 # Fine-grained permissions for individual VMs/CTs
