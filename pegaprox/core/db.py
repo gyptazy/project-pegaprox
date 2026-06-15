@@ -608,7 +608,40 @@ class PegaProxDB:
                 UNIQUE(cluster_id, alert_type)
             )
         ''')
-        
+
+        # NS #501 Jun 2026 — persisted active (fired) alert instances for ack +
+        # escalation tracking. The in-memory cooldown map only deduped sends; this
+        # records each ongoing incident so the UI can acknowledge it and the loop
+        # can escalate unacked ones. last_fired_at is refreshed on every fire → a
+        # row that stops getting refreshed (~2x cooldown) is auto-resolved.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS active_alerts (
+                id TEXT PRIMARY KEY,
+                alert_key TEXT NOT NULL,
+                alert_id TEXT,
+                cluster_id TEXT,
+                metric TEXT,
+                target_type TEXT,
+                target_id TEXT,
+                target_name TEXT,
+                severity TEXT DEFAULT 'warning',
+                message TEXT,
+                current_value REAL,
+                threshold REAL,
+                operator TEXT,
+                triggered_at TEXT,
+                last_fired_at TEXT,
+                acked_at TEXT,
+                acked_by TEXT,
+                escalation_step INTEGER DEFAULT 0,
+                last_escalated_at TEXT,
+                resolved_at TEXT,
+                resolved_by TEXT
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_active_alerts_unresolved ON active_alerts(resolved_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_active_alerts_key ON active_alerts(alert_key)')
+
         # LW: ESXi integration was a pain, but people kept asking for it
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS esxi_storages (

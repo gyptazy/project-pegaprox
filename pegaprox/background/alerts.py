@@ -435,7 +435,9 @@ This is an automated alert from PegaProx.
                     email_status = f'failed: {error}'
                     logging.warning(f"[AlertCheck]   alert {alert_id} email → FAILED: {error}")
 
-            severity = 'critical' if current_value > 90 else 'warning' if current_value > 70 else 'info'
+            # NS #501: a rule may pin an explicit severity; otherwise derive it.
+            _rule_sev = alert.get('severity')
+            severity = _rule_sev if _rule_sev and _rule_sev != 'auto' else ('critical' if current_value > 90 else 'warning' if current_value > 70 else 'info')
             alert_data = {
                 'alert_name': alert_name,
                 'metric': metric,
@@ -467,6 +469,12 @@ This is an automated alert from PegaProx.
                 except Exception as he:
                     webhook_status = f'dispatch error: {he}'
                     logging.warning(f"[AlertCheck]   alert {alert_id} webhooks → FAILED: {he}")
+
+            # NS #501: persist this firing as an active incident (for ack + escalation)
+            try:
+                _upsert_active_alert(alert_key, alert_id, alert_data, round(current_value, 1), threshold, operator, target_id)
+            except Exception as _aae:
+                logging.debug(f"[AlertCheck] active-alert persist failed: {_aae}")
 
             _record_eval(alert_id, triggered=True, current_value=round(current_value, 1),
                          threshold=threshold, operator=operator, metric=metric,
@@ -742,6 +750,115 @@ def _periodic_audit_cleanup():
         logging.debug(f"[AuditCleanup] background pass failed: {e}")
 
 
+def _upsert_active_alert(alert_key, alert_id, alert_data, current_value, threshold, operator, target_id):
+    """#501 — create/refresh the persisted active-alert row for an ongoing incident.
+    First fire inserts; later fires only bump last_fired_at (used for auto-resolve)."""
+    from pegaprox.core.db import get_db
+    import uuid as _uuid
+    now = datetime.now().isoformat()
+    db = get_db()
+    cur = db.conn.cursor()
+    existing = cur.execute(
+        "SELECT id FROM active_alerts WHERE alert_key = ? AND resolved_at IS NULL",
+        (alert_key,)).fetchone()
+    sev = alert_data.get('severity', 'warning')
+    msg = alert_data.get('message', '')
+    if existing:
+        cur.execute(
+            "UPDATE active_alerts SET last_fired_at=?, severity=?, message=?, current_value=?, threshold=?, operator=? WHERE id=?",
+            (now, sev, msg, current_value, threshold, operator, existing[0]))
+    else:
+        cur.execute(
+            """INSERT INTO active_alerts
+               (id, alert_key, alert_id, cluster_id, metric, target_type, target_id, target_name,
+                severity, message, current_value, threshold, operator, triggered_at, last_fired_at, escalation_step)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+            (str(_uuid.uuid4())[:12], alert_key, alert_id, alert_data.get('cluster_id'),
+             alert_data.get('metric'), alert_data.get('target_type'),
+             ('' if target_id is None else str(target_id)), alert_data.get('target_name'),
+             sev, msg, current_value, threshold, operator, now, now))
+    db.conn.commit()
+
+
+def process_alert_lifecycle():
+    """#501 — auto-resolve stale active alerts + escalate unacked ones. Runs each
+    tick after check_and_send_alerts. Resolution is driven by last_fired_at going
+    stale (independent of the per-rule cooldown); escalation by the rule's
+    escalation steps measured from triggered_at. Acked incidents stop escalating."""
+    from pegaprox.core.db import get_db
+    cooldown = load_server_settings().get('alert_cooldown', 300)
+    resolve_grace = max(cooldown * 2, 600) + 60  # no re-fire within this → cleared
+    now = datetime.now()
+    db = get_db()
+    cur = db.conn.cursor()
+    rows = cur.execute(
+        """SELECT id, alert_key, alert_id, cluster_id, severity, message, target_name,
+                  triggered_at, last_fired_at, acked_at, escalation_step
+           FROM active_alerts WHERE resolved_at IS NULL""").fetchall()
+    if not rows:
+        return
+    rules_by_id = None
+    for r in rows:
+        (aid, alert_key, rule_id, cluster_id, severity, message, target_name,
+         triggered_at, last_fired_at, acked_at, esc_step) = r
+        # 1) auto-resolve incidents that stopped re-firing
+        try:
+            lf = datetime.fromisoformat(last_fired_at) if last_fired_at else None
+        except Exception:
+            lf = None
+        if lf and (now - lf).total_seconds() > resolve_grace:
+            cur.execute("UPDATE active_alerts SET resolved_at=?, resolved_by='auto' WHERE id=?",
+                        (now.isoformat(), aid))
+            continue
+        # 2) escalate unacked incidents along their rule's chain
+        if acked_at:
+            continue
+        if rules_by_id is None:
+            try:
+                rules_by_id = {a.get('id'): a for a in (load_alerts_config().get('alerts', []) or [])}
+            except Exception:
+                rules_by_id = {}
+        steps = (rules_by_id.get(rule_id) or {}).get('escalation') or []
+        if not isinstance(steps, list) or not steps:
+            continue
+        try:
+            trg = datetime.fromisoformat(triggered_at) if triggered_at else now
+        except Exception:
+            trg = now
+        elapsed_min = (now - trg).total_seconds() / 60.0
+        for idx, step in enumerate(steps):
+            if idx < (esc_step or 0):
+                continue
+            try:
+                after = float(step.get('after_minutes', 0))
+            except Exception:
+                after = 0
+            if elapsed_min < after:
+                break  # ordered steps — later ones aren't due yet
+            channels = step.get('channels') or []
+            esc_data = {
+                'alert_name': f"{message or 'Alert'} [escalation {idx + 1}]",
+                'severity': severity, 'cluster_id': cluster_id,
+                'target_name': target_name, 'message': message or '',
+                'timestamp': now.isoformat(),
+            }
+            try:
+                wh = [c for c in channels if c not in ('email', 'log')]
+                if wh:
+                    from pegaprox.utils.webhooks import send_to_channels
+                    send_to_channels(esc_data, channel_ids=wh)
+                if 'email' in channels:
+                    recips = load_server_settings().get('alert_email_recipients', [])
+                    if recips:
+                        send_email(recips, f"[ESCALATION] {esc_data['alert_name']}", message or '', None)
+                logging.info(f"[AlertEscalation] {alert_key} → step {idx + 1} via {channels}")
+            except Exception as ee:
+                logging.warning(f"[AlertEscalation] step {idx + 1} dispatch failed: {ee}")
+            cur.execute("UPDATE active_alerts SET escalation_step=?, last_escalated_at=? WHERE id=?",
+                        (idx + 1, now.isoformat(), aid))
+    db.conn.commit()
+
+
 def alert_check_loop():
     """Background thread that checks alerts periodically"""
     global _alert_running
@@ -752,6 +869,10 @@ def alert_check_loop():
             check_and_send_alerts()
         except Exception as e:
             logging.error(f"Alert check error: {e}")
+        try:
+            process_alert_lifecycle()  # NS #501: auto-resolve + escalation
+        except Exception as e:
+            logging.debug(f"Alert lifecycle error: {e}")
         try:
             check_node_status_transitions()
         except Exception as e:
