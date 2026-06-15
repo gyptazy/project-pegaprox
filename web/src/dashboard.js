@@ -8108,6 +8108,8 @@
             // NS Apr 2026 #213 — channels loaded lazily when modal opens
             const [alertChannels, setAlertChannels] = useState([]);
             const [pickedChannels, setPickedChannels] = useState(['email']);
+            const [activeAlerts, setActiveAlerts] = useState([]);  // NS #501 — firing incidents
+            const [escSteps, setEscSteps] = useState([]);  // NS #501 — escalation steps in the create modal
             const [clusterAffinityRules, setClusterAffinityRules] = useState([]);
             const [showAffinityModal, setShowAffinityModal] = useState(false);
             
@@ -9581,7 +9583,24 @@
                     console.error('Failed to toggle alert:', err);
                 }
             };
-            
+
+            // NS #501 — currently-firing incidents (ack + escalation)
+            const loadActiveAlerts = async (clusterId) => {
+                if (!clusterId) return;
+                try {
+                    const r = await authFetch(`${API_URL}/clusters/${clusterId}/active-alerts`);
+                    if (r && r.ok) { const d = await r.json(); setActiveAlerts(d.active_alerts || []); }
+                    else setActiveAlerts([]);
+                } catch (e) { setActiveAlerts([]); }
+            };
+            const ackAlert = async (firedId) => {
+                if (!selectedCluster?.id) return;
+                try {
+                    const r = await authFetch(`${API_URL}/clusters/${selectedCluster.id}/active-alerts/${firedId}/ack`, { method: 'POST' });
+                    if (r && r.ok) { addToast(t('alertAcked') || 'Alert acknowledged', 'success'); loadActiveAlerts(selectedCluster.id); }
+                } catch (e) { console.error('Failed to ack alert:', e); }
+            };
+
             // ============================================
             // Cluster Affinity Rules Functions - NS Jan 2026
             // ============================================
@@ -9868,6 +9887,7 @@
                 if (activeTab === 'automation' && selectedCluster?.id) {
                     loadClusterTags(selectedCluster.id);
                     loadClusterAlerts(selectedCluster.id);
+                    loadActiveAlerts(selectedCluster.id);  // NS #501
                     loadClusterAffinityRules(selectedCluster.id);
                     loadCustomScripts(selectedCluster.id);
                 }
@@ -15604,6 +15624,7 @@
                                                                 onClick={async () => {
                                                                     setShowAlertModal(true);
                                                                     setPickedChannels(['email']);
+                                                                    setEscSteps([]);  // NS #501
                                                                     try {
                                                                         const r = await fetch('/api/alert-channels', { credentials: 'include' });
                                                                         if (r.ok) {
@@ -15618,6 +15639,40 @@
                                                             </button>
                                                         </div>
                                                         
+                                                        {/* NS #501 — currently firing incidents (severity + ack) */}
+                                                        {activeAlerts.length > 0 && (
+                                                            <div className="space-y-2">
+                                                                <div className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+                                                                    <Icons.AlertTriangle className="w-4 h-4 text-amber-400" />
+                                                                    {t('activeAlerts') || 'Active Alerts'} <span className="text-xs text-gray-500">({activeAlerts.length})</span>
+                                                                </div>
+                                                                {activeAlerts.map(a => (
+                                                                    <div key={a.id} className={`flex items-center justify-between p-3 rounded-lg border ${a.acked_at ? 'bg-proxmox-darker border-proxmox-darker opacity-70' : 'bg-amber-500/10 border-amber-500/30'}`}>
+                                                                        <div className="flex items-center gap-3 min-w-0">
+                                                                            <span className={`px-1.5 py-0.5 text-[10px] rounded uppercase font-mono shrink-0 ${
+                                                                                a.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                                                                                a.severity === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
+                                                                                'bg-blue-500/20 text-blue-400'
+                                                                            }`}>{a.severity}</span>
+                                                                            <div className="min-w-0">
+                                                                                <div className="text-sm truncate">{a.message || `${a.metric} ${a.operator} ${a.threshold}`}</div>
+                                                                                <div className="text-xs text-gray-500">
+                                                                                    {fmtDate ? fmtDate(a.triggered_at) : a.triggered_at}
+                                                                                    {a.escalation_step > 0 && <span className="text-amber-400 ml-2">↑ {t('escStep') || 'esc'} {a.escalation_step}</span>}
+                                                                                    {a.acked_at && <span className="text-green-400 ml-2">✓ {t('acked') || 'acked'}{a.acked_by ? ` (${a.acked_by})` : ''}</span>}
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                        {!a.acked_at && (
+                                                                            <button onClick={() => ackAlert(a.id)} className="px-3 py-1.5 text-xs bg-proxmox-dark hover:bg-proxmox-hover border border-proxmox-border rounded-lg shrink-0">
+                                                                                {t('acknowledge') || 'Acknowledge'}
+                                                                            </button>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
+
                                                         {clusterAlerts.length === 0 ? (
                                                             <div className="bg-proxmox-dark rounded-xl p-8 text-center">
                                                                 <Icons.Bell className="mx-auto mb-3 w-10 h-10 text-gray-600" />
@@ -22702,6 +22757,8 @@
                                         operator: form.operator.value,
                                         threshold: parseInt(form.threshold.value),
                                         channels,
+                                        severity: form.severity.value,  // NS #501
+                                        escalation: escSteps.filter(s => s.after_minutes > 0),  // NS #501
                                         action: legacyAction,
                                         enabled: true
                                     });
@@ -22790,6 +22847,40 @@
                                         {pickedChannels.length === 0 && (
                                             <div className="text-xs text-gray-500 mt-1">{t('logOnlyHint') || 'No channels selected — the alert will only be logged.'}</div>
                                         )}
+                                    </div>
+                                    {/* NS #501 — severity + escalation steps */}
+                                    <div>
+                                        <label className="block text-sm text-gray-400 mb-1">{t('severity') || 'Severity'}</label>
+                                        <select name="severity" defaultValue="auto" className="w-full px-3 py-2 bg-proxmox-dark border border-proxmox-border rounded-lg">
+                                            <option value="auto">{t('severityAuto') || 'Auto (by value)'}</option>
+                                            <option value="critical">Critical</option>
+                                            <option value="warning">Warning</option>
+                                            <option value="info">Info</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm text-gray-400 mb-1">{t('escalationLabel') || 'Escalation'} <span className="text-xs text-gray-600">({t('optional') || 'optional'})</span></label>
+                                        <div className="space-y-2">
+                                            {escSteps.map((step, i) => (
+                                                <div key={i} className="flex items-center gap-2 bg-proxmox-dark border border-proxmox-border rounded-lg p-2">
+                                                    <span className="text-xs text-gray-400 shrink-0">{t('escAfter') || 'After'}</span>
+                                                    <input type="number" min="1" value={step.after_minutes}
+                                                        onChange={e => setEscSteps(prev => prev.map((s, j) => j === i ? { ...s, after_minutes: parseInt(e.target.value) || 0 } : s))}
+                                                        className="w-16 px-2 py-1 bg-proxmox-darker border border-proxmox-border rounded text-sm" />
+                                                    <span className="text-xs text-gray-400 shrink-0">min &rarr;</span>
+                                                    <select multiple value={step.channels}
+                                                        onChange={e => { const vals = Array.from(e.target.selectedOptions, o => o.value); setEscSteps(prev => prev.map((s, j) => j === i ? { ...s, channels: vals } : s)); }}
+                                                        className="flex-1 min-w-0 px-2 py-1 bg-proxmox-darker border border-proxmox-border rounded text-xs h-14">
+                                                        <option value="email">Email</option>
+                                                        {alertChannels.filter(c => c.enabled !== false).map(c => <option key={c.id} value={c.id}>{c.name || c.id}</option>)}
+                                                    </select>
+                                                    <button type="button" onClick={() => setEscSteps(prev => prev.filter((_, j) => j !== i))} className="p-1 hover:bg-red-500/20 rounded text-gray-500 hover:text-red-400 shrink-0"><Icons.Trash className="w-4 h-4" /></button>
+                                                </div>
+                                            ))}
+                                            <button type="button" onClick={() => setEscSteps(prev => [...prev, { after_minutes: 15, channels: [] }])} className="text-xs text-proxmox-orange hover:text-orange-400 flex items-center gap-1">
+                                                <Icons.Plus className="w-3 h-3" /> {t('addEscStep') || 'Add escalation step'}
+                                            </button>
+                                        </div>
                                     </div>
                                     <div className="flex gap-2 justify-end pt-2">
                                         <button type="button" onClick={() => setShowAlertModal(false)} className="px-4 py-2 bg-proxmox-dark hover:bg-proxmox-hover rounded-lg">
