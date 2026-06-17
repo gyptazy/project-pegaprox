@@ -221,22 +221,40 @@ except:
 " 2>/dev/null)
     fi
 
+    # NS: track fallback-download failures so a partial/mixed update aborts and
+    # restores from the backup instead of silently leaving a half-written tree
+    # (#168, thanks @x86txt). Only the per-file fallback path — the rsync/tar
+    # archive path stays as-is (no --delete; it would wipe offline fonts + plugins).
+    DOWNLOAD_FAILURES=0
+
     if [ -n "$PACKAGE_FILES" ]; then
-        echo "Downloading ${PACKAGE_FILES##*$'\n'} files..."
+        echo "Downloading file list from manifest..."
         while IFS= read -r pfile; do
             [ -z "$pfile" ] && continue
-            download_file "$pfile" || true
+            if ! download_file "$pfile"; then
+                DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
+            fi
         done <<< "$PACKAGE_FILES"
     else
         # absolute fallback - at least get the essentials
         echo "No file list found, downloading essentials..."
-        download_file "pegaprox_multi_cluster.py"
-        download_file "version.json"
-        download_file "requirements.txt"
-        download_file "deploy.sh"
-        download_file "update.sh"
-        download_file "web/index.html"
-        download_file "web/index.html.original"
+        for _ess in pegaprox_multi_cluster.py version.json requirements.txt deploy.sh update.sh web/index.html web/index.html.original; do
+            if ! download_file "$_ess"; then
+                DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
+            fi
+        done
+    fi
+
+    if [ "$DOWNLOAD_FAILURES" -gt 0 ]; then
+        echo -e "${RED}Update aborted: $DOWNLOAD_FAILURES file(s) failed to download.${NC}"
+        echo "Restoring from backup..."
+        [ -f "$BACKUP_DIR/pegaprox_multi_cluster.py" ] && cp "$BACKUP_DIR/pegaprox_multi_cluster.py" . 2>/dev/null || true
+        [ -d "$BACKUP_DIR/pegaprox" ] && { rm -rf pegaprox && cp -r "$BACKUP_DIR/pegaprox" . 2>/dev/null; } || true
+        [ -d "$BACKUP_DIR/web" ] && { mkdir -p web && cp "$BACKUP_DIR/web/"* web/ 2>/dev/null; } || true
+        [ -f "$BACKUP_DIR/version.json" ] && cp "$BACKUP_DIR/version.json" . 2>/dev/null || true
+        [ -f "$BACKUP_DIR/requirements.txt" ] && cp "$BACKUP_DIR/requirements.txt" . 2>/dev/null || true
+        rm -rf "$TMPDIR"
+        exit 1
     fi
 
     rm -rf "$TMPDIR"
