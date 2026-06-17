@@ -3522,9 +3522,10 @@ def vnc_poll(cluster_id, node, vm_type, vmid):
             # the open body, reuse them so noVNC's RFB password matches PVE's.
             pve_port_q = body.get('pve_port')
             pve_ticket_q = body.get('pve_ticket')
-            if pve_port_q and pve_ticket_q:
+            _ppt_ok, _ppt_port = _safe_vnc_passthrough(pve_port_q, pve_ticket_q)
+            if pve_port_q and pve_ticket_q and _ppt_ok:
                 vnc_ticket = pve_ticket_q
-                vnc_port = pve_port_q
+                vnc_port = _ppt_port
             else:
                 vnc_url = f"https://{host}:{port}/api2/json/nodes/{node}/{vm_type}/{vmid}/vncproxy"
                 vnc_req = urllib.request.Request(vnc_url, data=urllib.parse.urlencode({'websocket': '1'}).encode('utf-8'), method='POST')
@@ -5533,6 +5534,23 @@ def run_replication_now_api(cluster_id, job_id):
 # NS: Mar 2026 - same-cluster snapshot replication for non-ZFS storage (#103)
 # Proxmox native replication needs ZFS, this works with any storage backend
 # Flow: snapshot -> clone to target storage -> migrate clone to target node -> cleanup
+def _safe_vnc_passthrough(port_raw, ticket_raw):
+    """#352 single-vncproxy passthrough: the browser hands back the port+ticket of
+    the vncproxy IT opened so noVNC's RFB password matches. Validate before those
+    values steer a wss:// authority / Cookie (sec-review): port must be a plain
+    1-65535 integer, ticket a single-line opaque token. (ok, int_port)."""
+    try:
+        p = int(str(port_raw).strip())
+    except (TypeError, ValueError):
+        return (False, None)
+    if not (1 <= p <= 65535):
+        return (False, None)
+    t = str(ticket_raw or '')
+    if not t or len(t) > 4096 or any(c in t for c in '\r\n\x00'):
+        return (False, None)
+    return (True, p)
+
+
 def _resolve_vm_node(mgr, vmid, vm_type='qemu'):
     """Authoritatively locate which node a VMID lives on by probing each node's
     status endpoint directly. /cluster/resources is fed by pmxcfs and lags by
@@ -6942,9 +6960,10 @@ def handle_vnc_websocket(ws, cluster_id, node, vm_type, vmid):
         # 9.1.x generates fresh random VNC password per vncproxy call.
         pve_port_q = request.args.get('pve_port')
         pve_ticket_q = request.args.get('pve_ticket')
-        if pve_port_q and pve_ticket_q:
+        _ppt_ok, _ppt_port = _safe_vnc_passthrough(pve_port_q, pve_ticket_q)
+        if pve_port_q and pve_ticket_q and _ppt_ok:
             vnc_ticket = pve_ticket_q
-            port = pve_port_q
+            port = _ppt_port
             print(f"Reusing JS-issued vncproxy ticket port={port}")
         else:
             print(f"Step 2: Get VNC ticket...")
@@ -7307,10 +7326,15 @@ def start_vnc_websocket_server(port=5001, ssl_cert=None, ssl_key=None, host='0.0
             # ticket prefix. Newer PVE is strict.
             pve_port_q = query_params.get('pve_port', [None])[0]
             pve_ticket_q = query_params.get('pve_ticket', [None])[0]
+            # sec-review: validate the passthrough; null it on garbage so both this
+            # block AND the auth-header reuse below fall back cleanly to a fresh vncproxy.
+            _ppt_ok, _ppt_port = _safe_vnc_passthrough(pve_port_q, pve_ticket_q)
+            if not _ppt_ok:
+                pve_port_q = pve_ticket_q = None
             if pve_port_q and pve_ticket_q:
                 # Single-vncproxy mode: trust the caller-supplied port+ticket.
                 vnc_ticket = pve_ticket_q
-                port = pve_port_q
+                port = _ppt_port
                 logging.info(f"[VNC] reusing JS-issued vncproxy ticket port={port} (single-call mode)")
             else:
                 # Backwards-compat fallback: issue our own vncproxy. This still
@@ -7866,9 +7890,10 @@ def vnc_websocket_proxy(ws, cluster_id, node, vm_type, vmid):
         # 9.1.x generates fresh random VNC password per vncproxy call.
         pve_port_q = request.args.get('pve_port')
         pve_ticket_q = request.args.get('pve_ticket')
-        if pve_port_q and pve_ticket_q:
+        _ppt_ok, _ppt_port = _safe_vnc_passthrough(pve_port_q, pve_ticket_q)
+        if pve_port_q and pve_ticket_q and _ppt_ok:
             vnc_ticket = pve_ticket_q
-            port = pve_port_q
+            port = _ppt_port
             print(f"Reusing JS-issued vncproxy ticket port={port}")
         else:
             print(f"Step 2: Get VNC ticket...")

@@ -184,7 +184,9 @@ def validate_ws_token_api():
                 # (cluster-level reach only; the proxy + user_can_access_vm gate the VM)
                 try:
                     from pegaprox.core.db import get_db
-                    if get_db().get_user_pool_permissions(requested_cluster, data['user'], user.get('groups', [])):
+                    # sec-review: ignore empty {pool: []} grants (truthy dict, no perm)
+                    _pp = get_db().get_user_pool_permissions(requested_cluster, data['user'], user.get('groups', []))
+                    if any(p for p in _pp.values()):
                         access_ok = True
                 except Exception:
                     pass

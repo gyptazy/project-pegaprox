@@ -379,6 +379,14 @@ def tenant_chargeback(tenant_id):
         tenant = (_rbac.tenants_db or {}).get(tenant_id)
         if not tenant:
             return jsonify({'error': 'tenant not found'}), 404
+
+        # MK Jun 2026 (sec-review) — admin.tenants can be a tenant-scoped custom role;
+        # scope to the caller's own tenant unless a real admin, else one tenant could
+        # read another tenant's full VM inventory + per-VM cost breakdown (BOLA).
+        if request.session.get('role') != _rbac.ROLE_ADMIN:
+            _caller = get_db().get_user(request.session.get('user', '')) or {}
+            if tenant_id != _caller.get('tenant_id', _rbac.DEFAULT_TENANT_ID):
+                return jsonify({'error': 'Access denied to this tenant'}), 403
         allowed = _rbac.get_user_clusters({'role': _rbac.ROLE_VIEWER, 'tenant_id': tenant_id})  # None = all clusters
 
         factor = 30.0 / days if days < 30 else 1.0

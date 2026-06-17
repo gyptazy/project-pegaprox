@@ -586,9 +586,13 @@ def get_cluster_tags(cluster_id):
     
     Returns unique tags with their colors and usage count
     """
+    # MK Jun 2026 (sec-review) — was unscoped; leaked tags cross-tenant (CWE-285)
+    ok, err = check_cluster_access(cluster_id)
+    if not ok:
+        return err
     tags_db = load_vm_tags()
     cluster_tags = tags_db.get(cluster_id, {})
-    
+
     # Count tag usage
     tag_counts = {}
     for vm_key, vm_tags in cluster_tags.items():
@@ -609,6 +613,9 @@ def get_cluster_tags(cluster_id):
 @require_auth()
 def get_vm_tags(cluster_id, vmid):
     """Get tags for a specific VM"""
+    ok, err = check_cluster_access(cluster_id)  # sec-review: was unscoped (CWE-285)
+    if not ok:
+        return err
     tags_db = load_vm_tags()
     cluster_tags = tags_db.get(cluster_id, {})
     vm_tags = cluster_tags.get(str(vmid), [])
@@ -628,6 +635,11 @@ def update_vm_tags(cluster_id, vmid):
     - tag: Single tag name to add
     - color: Optional color for the tag
     """
+    # MK Jun 2026 (sec-review) — vm.config is global; gate per-cluster so a tenant
+    # user can't write tags onto another tenant's VMs (the DELETE sibling already does)
+    ok, err = check_cluster_access(cluster_id)
+    if not ok:
+        return err
     data = request.json or {}
     tags_db = load_vm_tags()
     

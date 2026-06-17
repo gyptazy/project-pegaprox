@@ -1057,6 +1057,13 @@ def update_tenant(tenant_id):
 def get_tenant_quota(tenant_id):
     """#502 — live resource usage vs configured quota for a tenant"""
     try:
+        # MK Jun 2026 (sec-review) — admin.tenants can be held by a tenant-scoped
+        # custom role, so scope to the caller's own tenant unless a real admin —
+        # otherwise one tenant could read another's live usage (BOLA).
+        if request.session.get('role') != ROLE_ADMIN:
+            _caller = get_db().get_user(request.session.get('user', '')) or {}
+            if tenant_id != _caller.get('tenant_id', DEFAULT_TENANT_ID):
+                return jsonify({'error': 'Access denied to this tenant'}), 403
         from pegaprox.utils.rbac import check_tenant_quota
         return jsonify(check_tenant_quota(tenant_id, add_cores=0, add_mem_gb=0, add_vms=0, force=True))
     except Exception as e:

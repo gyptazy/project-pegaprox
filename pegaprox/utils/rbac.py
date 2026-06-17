@@ -296,7 +296,7 @@ def get_user_effective_role(user: dict, tenant_id: str = None) -> str:
         return tenant_perms[tenant_id].get('role', user.get('role', ROLE_VIEWER))
     return user.get('role', ROLE_VIEWER)
 
-def get_user_clusters(user: dict) -> list:
+def get_user_clusters(user: dict, include_pools: bool = True) -> list:
     """Get list of cluster IDs user can access based on tenant
     
     NS: Dec 2025 - Also checks role's tenant for tenant-specific roles
@@ -352,14 +352,18 @@ def get_user_clusters(user: dict) -> list:
     # #555: a pool-only user (tenant+group gave them this list) must also reach
     # clusters where they hold pool perms. Only widen the non-None list — the None
     # (admin / default-tenant-all) paths above already see everything.
-    try:
-        username = user.get('username', '')
-        if username:
-            pool_cids = get_db().get_user_pool_clusters(username, user.get('groups', []))
-            if pool_cids:
-                clusters = list(set(clusters) | set(pool_cids))
-    except Exception as e:
-        logging.error(f"Error adding pool clusters for {user.get('username','')}: {e}")
+    # MK Jun 2026 (sec-review): callers that decide BLANKET per-cluster authority
+    # (the role fall-through in user_can_access_vm) pass include_pools=False, so a
+    # pool grant only reaches its pool's VMs — not every VM on the cluster.
+    if include_pools:
+        try:
+            username = user.get('username', '')
+            if username:
+                pool_cids = get_db().get_user_pool_clusters(username, user.get('groups', []))
+                if pool_cids:
+                    clusters = list(set(clusters) | set(pool_cids))
+        except Exception as e:
+            logging.error(f"Error adding pool clusters for {user.get('username','')}: {e}")
 
     return clusters
 
@@ -791,7 +795,17 @@ def user_can_access_vm(user: dict, cluster_id: str, vmid: int, permission: str =
     except Exception as e:
         logging.error(f"[POOL-PERM] Error checking pool permission: {e}")
     
-    # no VM-specific ACL or pool permission - use general permissions
+    # no VM-specific ACL or pool permission matched.
+    # MK Jun 2026 (sec-review): the general-role fall-through may ONLY grant blanket
+    # access to VMs on clusters the user belongs to via their TENANT. A user who merely
+    # *reached* this cluster through a VM-ACL or pool grant (cluster not in their tenant
+    # set) must NOT inherit role-wide control of every VM here — only the specific ACL/
+    # pool VMs handled above. Without this, #555's pool cluster-reach (and the older
+    # #248 VM-ACL reach) let a pool-/ACL-scoped user drive every VM on the cluster.
+    tenant_clusters = get_user_clusters(user, include_pools=False)
+    if tenant_clusters is not None and cluster_id not in tenant_clusters:
+        logging.debug(f"[VM-ACL] {username} reached {cluster_id} only via ACL/pool; no grant for VM {vmid} → deny {permission}")
+        return False
     result = has_permission(user, permission)
     logging.debug(f"[VM-ACL] Fallback to general permission check for {permission}: {result}")
     return result
