@@ -296,7 +296,7 @@ def get_user_effective_role(user: dict, tenant_id: str = None) -> str:
         return tenant_perms[tenant_id].get('role', user.get('role', ROLE_VIEWER))
     return user.get('role', ROLE_VIEWER)
 
-def get_user_clusters(user: dict) -> list:
+def get_user_clusters(user: dict, include_pools: bool = True) -> list:
     """Get list of cluster IDs user can access based on tenant
     
     NS: Dec 2025 - Also checks role's tenant for tenant-specific roles
@@ -348,7 +348,23 @@ def get_user_clusters(user: dict) -> list:
             return None  # default tenant can see all
         else:
             return []  # other tenants with no clusters assigned see nothing
-    
+
+    # #555: a pool-only user (tenant+group gave them this list) must also reach
+    # clusters where they hold pool perms. Only widen the non-None list — the None
+    # (admin / default-tenant-all) paths above already see everything.
+    # MK Jun 2026 (sec-review): callers that decide BLANKET per-cluster authority
+    # (the role fall-through in user_can_access_vm) pass include_pools=False, so a
+    # pool grant only reaches its pool's VMs — not every VM on the cluster.
+    if include_pools:
+        try:
+            username = user.get('username', '')
+            if username:
+                pool_cids = get_db().get_user_pool_clusters(username, user.get('groups', []))
+                if pool_cids:
+                    clusters = list(set(clusters) | set(pool_cids))
+        except Exception as e:
+            logging.error(f"Error adding pool clusters for {user.get('username','')}: {e}")
+
     return clusters
 
 def filter_clusters_for_user(clusters: dict, user: dict) -> dict:
@@ -358,6 +374,60 @@ def filter_clusters_for_user(clusters: dict, user: dict) -> dict:
         return clusters  # user can see all
     
     return {k: v for k, v in clusters.items() if k in allowed}
+
+
+def check_tenant_quota(tenant_id, add_cores=0, add_mem_gb=0, add_vms=1, force=False):
+    """#502 — sum a tenant's current resource usage across its clusters and decide
+    whether adding (add_cores, add_mem_gb, add_vms) would exceed its quota.
+    Returns {'ok', 'enforce', 'violations', 'usage', 'quota'}. FAIL-OPEN: any error
+    returns ok=True so a quota bug can never block a legitimate VM create.
+    force=True computes usage even when no quota is set (for the usage display)."""
+    try:
+        global tenants_db
+        # NS #502 — always refresh: the cached global goes stale after a quota edit,
+        # and get_user_clusters() below reads the same global for cluster resolution.
+        tenants_db = load_tenants()
+        t = (tenants_db or {}).get(tenant_id) or {}
+        qv = int(t.get('quota_max_vms', 0) or 0)
+        qc = int(t.get('quota_max_cores', 0) or 0)
+        qm = int(t.get('quota_max_memory_gb', 0) or 0)
+        enforce = t.get('quota_enforcement') or 'block'
+        if not force and qv <= 0 and qc <= 0 and qm <= 0:
+            return {'ok': True, 'enforce': enforce, 'violations': [], 'usage': {}, 'quota': {}}
+        allowed = get_user_clusters({'role': ROLE_VIEWER, 'tenant_id': tenant_id})  # None = all clusters
+        from pegaprox.globals import cluster_managers
+        used_vms = 0
+        used_cores = 0
+        used_mem = 0.0
+        for cid, mgr in cluster_managers.items():
+            if allowed is not None and cid not in allowed:
+                continue
+            try:
+                vms = mgr.get_vm_resources() if hasattr(mgr, 'get_vm_resources') else []
+            except Exception:
+                vms = []
+            for vm in (vms or []):
+                used_vms += 1
+                used_cores += int(vm.get('maxcpu') or vm.get('cpus') or vm.get('cores') or 0)
+                try:
+                    used_mem += float(vm.get('maxmem') or 0) / (1024.0 ** 3)
+                except (ValueError, TypeError):
+                    pass
+        violations = []
+        if qv > 0 and used_vms + add_vms > qv:
+            violations.append('vms')
+        if qc > 0 and used_cores + add_cores > qc:
+            violations.append('cores')
+        if qm > 0 and used_mem + add_mem_gb > qm:
+            violations.append('memory')
+        return {
+            'ok': not violations, 'enforce': enforce, 'violations': violations,
+            'usage': {'vms': used_vms, 'cores': used_cores, 'memory_gb': round(used_mem, 1)},
+            'quota': {'vms': qv, 'cores': qc, 'memory_gb': qm},
+        }
+    except Exception as e:
+        logging.warning(f"[quota] check failed, allowing create (fail-open): {e}")
+        return {'ok': True, 'enforce': 'warn', 'violations': [], 'usage': {}, 'quota': {}}
 
 
 # =============================================================================
@@ -563,6 +633,61 @@ def get_vm_pool_cached(cluster_id: str, vmid: int, vm_type: str = None) -> str:
         # Try both types
         return membership.get(f"{vmid}:qemu") or membership.get(f"{vmid}:lxc")
 
+def user_has_any_pool_access(user: dict, cluster_id: str) -> bool:
+    """#555 — does this user hold ANY pool permission in this cluster?
+    One cheap DB read, no membership scan. For the cluster gates."""
+    if user.get('role') == ROLE_ADMIN:
+        return True
+    username = user.get('username', '')
+    if not username:
+        return False
+    try:
+        perms = get_db().get_user_pool_permissions(cluster_id, username, user.get('groups', []))
+    except Exception as e:
+        logging.error(f"[POOL] any-access check failed for {username}@{cluster_id}: {e}")
+        return False
+    return any(p for p in perms.values())
+
+
+def get_user_pool_vmids(user: dict, cluster_id: str, permission: str = None) -> set:
+    """#555 — set of int vmids the user can reach via pool perms in this cluster.
+    Reuses the pool-membership cache + a single DB read. Empty set if none.
+    Only consulted for non-admins (list callers handle admin-all separately).
+
+    permission=None (default) = VISIBILITY: any non-empty pool grant counts. This
+    matches the pool model where 'pool.view' (not 'vm.view') is the see-the-members
+    permission — so the portal list shows a pool's VMs to anyone with a grant on it.
+    Pass a specific action perm (e.g. 'vm.start') to filter to pools where the user
+    holds that perm (or pool.admin)."""
+    username = user.get('username', '')
+    if not username:
+        return set()
+    try:
+        user_pool_perms = get_db().get_user_pool_permissions(cluster_id, username, user.get('groups', []))
+    except Exception as e:
+        logging.error(f"[POOL] vmid-list failed for {username}@{cluster_id}: {e}")
+        return set()
+    if not user_pool_perms:
+        return set()
+    if permission is None:
+        # visibility: any pool the user holds at least one (non-empty) permission on
+        ok_pools = {pid for pid, perms in user_pool_perms.items() if perms}
+    else:
+        # action-specific: pool.admin grants everything, else the perm must be present
+        ok_pools = {pid for pid, perms in user_pool_perms.items()
+                    if 'pool.admin' in perms or permission in perms}
+    if not ok_pools:
+        return set()
+    membership = get_pool_membership_cache(cluster_id)  # {'vmid:type': pool_id}
+    out = set()
+    for key, pid in membership.items():
+        if pid in ok_pools:
+            try:
+                out.add(int(key.split(':', 1)[0]))
+            except (ValueError, IndexError):
+                continue
+    return out
+
 def get_vm_acls():
     """Get VM ACLs - always reload from disk to avoid stale cache issues
     
@@ -670,7 +795,17 @@ def user_can_access_vm(user: dict, cluster_id: str, vmid: int, permission: str =
     except Exception as e:
         logging.error(f"[POOL-PERM] Error checking pool permission: {e}")
     
-    # no VM-specific ACL or pool permission - use general permissions
+    # no VM-specific ACL or pool permission matched.
+    # MK Jun 2026 (sec-review): the general-role fall-through may ONLY grant blanket
+    # access to VMs on clusters the user belongs to via their TENANT. A user who merely
+    # *reached* this cluster through a VM-ACL or pool grant (cluster not in their tenant
+    # set) must NOT inherit role-wide control of every VM here — only the specific ACL/
+    # pool VMs handled above. Without this, #555's pool cluster-reach (and the older
+    # #248 VM-ACL reach) let a pool-/ACL-scoped user drive every VM on the cluster.
+    tenant_clusters = get_user_clusters(user, include_pools=False)
+    if tenant_clusters is not None and cluster_id not in tenant_clusters:
+        logging.debug(f"[VM-ACL] {username} reached {cluster_id} only via ACL/pool; no grant for VM {vmid} → deny {permission}")
+        return False
     result = has_permission(user, permission)
     logging.debug(f"[VM-ACL] Fallback to general permission check for {permission}: {result}")
     return result

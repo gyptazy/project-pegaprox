@@ -372,9 +372,26 @@ class PegaProxDB:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 clusters TEXT DEFAULT '[]',
-                created_at TEXT
+                created_at TEXT,
+                quota_max_vms INTEGER DEFAULT 0,
+                quota_max_cores INTEGER DEFAULT 0,
+                quota_max_memory_gb INTEGER DEFAULT 0,
+                quota_enforcement TEXT DEFAULT 'block'
             )
         ''')
+        # NS #502 — per-tenant quota columns for existing tenants tables (0 = unlimited)
+        try:
+            cursor.execute("PRAGMA table_info(tenants)")
+            _tcols = [c[1] for c in cursor.fetchall()]
+            for _cn, _cd in (('quota_max_vms', 'INTEGER DEFAULT 0'),
+                             ('quota_max_cores', 'INTEGER DEFAULT 0'),
+                             ('quota_max_memory_gb', 'INTEGER DEFAULT 0'),
+                             ('quota_enforcement', "TEXT DEFAULT 'block'")):
+                if _cn not in _tcols:
+                    cursor.execute(f"ALTER TABLE tenants ADD COLUMN {_cn} {_cd}")
+                    logging.info(f"Added {_cn} column to tenants table")
+        except Exception as _qe:
+            logging.error(f"tenant quota column migration failed: {_qe}")
         
         # Cluster Groups - organize clusters into collapsible groups with tenant assignment
         # NS: Jan 2026 - requested by user for better organization
@@ -608,7 +625,40 @@ class PegaProxDB:
                 UNIQUE(cluster_id, alert_type)
             )
         ''')
-        
+
+        # NS #501 Jun 2026 — persisted active (fired) alert instances for ack +
+        # escalation tracking. The in-memory cooldown map only deduped sends; this
+        # records each ongoing incident so the UI can acknowledge it and the loop
+        # can escalate unacked ones. last_fired_at is refreshed on every fire → a
+        # row that stops getting refreshed (~2x cooldown) is auto-resolved.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS active_alerts (
+                id TEXT PRIMARY KEY,
+                alert_key TEXT NOT NULL,
+                alert_id TEXT,
+                cluster_id TEXT,
+                metric TEXT,
+                target_type TEXT,
+                target_id TEXT,
+                target_name TEXT,
+                severity TEXT DEFAULT 'warning',
+                message TEXT,
+                current_value REAL,
+                threshold REAL,
+                operator TEXT,
+                triggered_at TEXT,
+                last_fired_at TEXT,
+                acked_at TEXT,
+                acked_by TEXT,
+                escalation_step INTEGER DEFAULT 0,
+                last_escalated_at TEXT,
+                resolved_at TEXT,
+                resolved_by TEXT
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_active_alerts_unresolved ON active_alerts(resolved_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_active_alerts_key ON active_alerts(alert_key)')
+
         # LW: ESXi integration was a pain, but people kept asking for it
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS esxi_storages (
@@ -1178,6 +1228,15 @@ class PegaProxDB:
             if 'target_node' not in cols:
                 cursor.execute("ALTER TABLE cross_cluster_replications ADD COLUMN target_node TEXT DEFAULT ''")
                 logging.info("Added target_node column to cross_cluster_replications")
+            # MK Jun 2026 (#552 @helppp) — let the operator pin the replica's VMID
+            # (keeps src/replica IDs in sync) and optionally tear the replica VM down
+            # when the job is removed, instead of orphaning a fresh VMID every recreate.
+            if 'target_vmid' not in cols:
+                cursor.execute("ALTER TABLE cross_cluster_replications ADD COLUMN target_vmid INTEGER")
+                logging.info("Added target_vmid column to cross_cluster_replications")
+            if 'delete_target' not in cols:
+                cursor.execute("ALTER TABLE cross_cluster_replications ADD COLUMN delete_target INTEGER DEFAULT 0")
+                logging.info("Added delete_target column to cross_cluster_replications")
         except Exception:
             pass
 
@@ -3631,7 +3690,24 @@ class PegaProxDB:
                         result[pool_id] = perms
         
         return result
-    
+
+    def get_user_pool_clusters(self, username: str, groups: List[str] = None) -> List[str]:
+        """#555 — distinct cluster_ids where this user (or their groups) holds ANY pool
+        permission. Cheap: one indexed SELECT per subject on pool_permissions
+        (idx_pool_perms_cluster). Used by the cluster-list + get_user_clusters gates."""
+        cursor = self.conn.cursor()
+        subjects = [('user', username)]
+        for g in (groups or []):
+            subjects.append(('group', g))
+        out = set()
+        for stype, sid in subjects:
+            cursor.execute(
+                "SELECT DISTINCT cluster_id FROM pool_permissions WHERE subject_type = ? AND subject_id = ?",
+                (stype, sid))
+            for row in cursor.fetchall():
+                out.add(row[0])
+        return list(out)
+
     # ========================================
     # KEY ROTATION (HIPAA/ISO Compliance)
     # ========================================
@@ -3981,10 +4057,20 @@ class PegaProxDB:
         cursor = self.conn.cursor()
         cursor.execute('SELECT * FROM tenants')
         
+        def _q(row, k, d):
+            try:
+                v = row[k]
+                return v if v is not None else d
+            except (IndexError, KeyError):
+                return d
         return [{
             'id': row['id'],
             'name': row['name'],
             'clusters': json.loads(row['clusters'] or '[]'),
+            'quota_max_vms': _q(row, 'quota_max_vms', 0),
+            'quota_max_cores': _q(row, 'quota_max_cores', 0),
+            'quota_max_memory_gb': _q(row, 'quota_max_memory_gb', 0),
+            'quota_enforcement': _q(row, 'quota_enforcement', 'block') or 'block',
         } for row in cursor.fetchall()]
     
     def save_tenant(self, tenant_id: str, data: dict):
@@ -3993,13 +4079,19 @@ class PegaProxDB:
         now = datetime.now().isoformat()
         
         cursor.execute('''
-            INSERT OR REPLACE INTO tenants (id, name, clusters, created_at)
-            VALUES (?, ?, ?, COALESCE((SELECT created_at FROM tenants WHERE id = ?), ?))
+            INSERT OR REPLACE INTO tenants (id, name, clusters, created_at,
+                quota_max_vms, quota_max_cores, quota_max_memory_gb, quota_enforcement)
+            VALUES (?, ?, ?, COALESCE((SELECT created_at FROM tenants WHERE id = ?), ?),
+                ?, ?, ?, ?)
         ''', (
             tenant_id,
             data.get('name', ''),
             json.dumps(data.get('clusters', [])),
-            tenant_id, now
+            tenant_id, now,
+            int(data.get('quota_max_vms', 0) or 0),
+            int(data.get('quota_max_cores', 0) or 0),
+            int(data.get('quota_max_memory_gb', 0) or 0),
+            (data.get('quota_enforcement') or 'block'),
         ))
         self.conn.commit()
     

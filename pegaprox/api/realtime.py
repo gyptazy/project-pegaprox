@@ -180,6 +180,17 @@ def validate_ws_token_api():
                         access_ok = True
                         break
             if not access_ok:
+                # #555: pool fallback — a pool grant in this cluster lets the WS token open
+                # (cluster-level reach only; the proxy + user_can_access_vm gate the VM)
+                try:
+                    from pegaprox.core.db import get_db
+                    # sec-review: ignore empty {pool: []} grants (truthy dict, no perm)
+                    _pp = get_db().get_user_pool_permissions(requested_cluster, data['user'], user.get('groups', []))
+                    if any(p for p in _pp.values()):
+                        access_ok = True
+                except Exception:
+                    pass
+            if not access_ok:
                 logging.warning(f"[WS-TOKEN] user '{_sl(data['user'])}' has no access to cluster '{_sl(requested_cluster)}'")
                 return jsonify({'error': 'Access denied to this cluster'}), 403
 

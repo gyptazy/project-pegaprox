@@ -2935,6 +2935,27 @@ class PegaProxManager:
                 # Genuine failure with ceph deployed — extract the probe-side message
                 tail = out.split('CEPH_CMD_FAILED', 1)[1].strip()
                 short = (tail.replace('\n', ' ').strip())[:200]
+                # MK Jun 2026 (#403 proxforge): ceph-common is often installed
+                # cluster-wide on nodes that don't actually run ceph. `ceph -s`
+                # then fails because there's no conf/monmap here — that's "not
+                # deployed", NOT a degraded cluster. Returning 'unknown' made the
+                # rolling-update log shout ✗ and then wait 120s per node for a
+                # cluster that has no ceph. Treat the no-config signatures as
+                # not-deployed (None); a real ceph that's merely unreachable still
+                # falls through to 'unknown' below so we keep surfacing that.
+                low = short.lower()
+                no_cluster = (
+                    'conf_read_file' in low
+                    or 'rados object not found' in low
+                    or 'get_monmap_and_config failed' in low
+                    or 'unable to read conf' in low
+                    or 'did not load config file' in low
+                    or 'unable to find any mon' in low
+                    or ('monclient' in low and 'fail' in low)
+                )
+                if no_cluster:
+                    self.logger.debug(f"[CEPH] {via_node}: ceph binary present but no cluster config here → not deployed ({short})")
+                    return None
                 self.logger.warning(f"[CEPH] probe failed via {via_node}: {short}")
                 return {'status': 'unknown', 'osd_up': 0, 'osd_in': 0, 'pgs': '',
                         'warnings': [f'ceph probe failed: {short or "no detail"}']}
@@ -11961,8 +11982,22 @@ echo "AGENT_INSTALLED_OK"
             return {'success': False, 'error': 'Not connected'}
         try:
             host = self.host
-            resp = self._api_delete(f"https://{host}:{self.api_port}/api2/json/pools/{poolid}")
-            return {'success': True} if resp.status_code == 200 else {'success': False, 'error': f'PVE {resp.status_code}'}
+            base = f"https://{host}:{self.api_port}/api2/json/pools/{poolid}"
+            # MK Jun 2026 (#555 follow-up) — PVE refuses to delete a non-empty pool
+            # ("pool 'X' is not empty (contains VM ...)") and the API surfaced that as a
+            # bare 'PVE 500'. Un-pool any members first (the VMs themselves are untouched),
+            # so deleting a pool works the way operators expect.
+            try:
+                members = (self.get_pool_members(poolid) or {}).get('members', []) or []
+                member_ids = [str(m.get('vmid')) for m in members if m.get('vmid') is not None]
+                if member_ids:
+                    self._api_put(base, data={'vms': ','.join(member_ids), 'delete': 1})
+            except Exception as e:
+                self.logger.warning(f"delete_pool({poolid}): member cleanup failed: {e}")
+            resp = self._api_delete(base)
+            if resp.status_code == 200:
+                return {'success': True}
+            return {'success': False, 'error': f'PVE {resp.status_code}: {(resp.text or "").strip()[:200]}'}
         except Exception as e:
             self.logger.error(f"delete_pool({poolid}): {e}")
             return {'success': False, 'error': str(e)}
@@ -12685,12 +12720,14 @@ echo "AGENT_INSTALLED_OK"
         
         MK: q35 is recommended for modern systems (PCIe native)
         i440fx is the legacy fallback for older guests
-        Updated Jan 2026 to include all versions from Proxmox 8.x
+        Updated Jun 2026 — added QEMU 11 (pve-qemu-kvm 11.0) types, newest on top
         """
         return [
             {'value': '', 'label': 'Default'},
             # q35 versions (modern, PCIe native)
             {'value': 'q35', 'label': 'q35 (Latest)'},
+            {'value': 'pc-q35-11.0+pve1', 'label': 'q35 11.0+pve1'},
+            {'value': 'pc-q35-11.0', 'label': 'q35 11.0'},
             {'value': 'pc-q35-10.1', 'label': 'q35 10.1'},
             {'value': 'pc-q35-10.0+pve1', 'label': 'q35 10.0+pve1'},
             {'value': 'pc-q35-10.0', 'label': 'q35 10.0'},
@@ -12720,6 +12757,8 @@ echo "AGENT_INSTALLED_OK"
             {'value': 'pc-q35-2.10', 'label': 'q35 2.10'},
             # i440fx versions (legacy PCI)
             {'value': 'i440fx', 'label': 'i440fx (Latest)'},
+            {'value': 'pc-i440fx-11.0+pve1', 'label': 'i440fx 11.0+pve1'},
+            {'value': 'pc-i440fx-11.0', 'label': 'i440fx 11.0'},
             {'value': 'pc-i440fx-10.1', 'label': 'i440fx 10.1'},
             {'value': 'pc-i440fx-10.0+pve1', 'label': 'i440fx 10.0+pve1'},
             {'value': 'pc-i440fx-10.0', 'label': 'i440fx 10.0'},
@@ -14408,6 +14447,52 @@ else
   systemctl restart sshd
 fi
 echo DONE""",
+            'backup_files': ['/etc/ssh/sshd_config'],
+            'rollback_post': "sshd -t 2>/dev/null && (systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null) || true",
+        },
+        # NS #433 — SSH access hardening (key-only root, auth tries, idle timeout).
+        # PermitRootLogin=prohibit-password, NOT 'no': PVE manages its nodes as
+        # root@pam, so key-based root must keep working; we also leave
+        # PasswordAuthentication alone for the same lockout reason. Rollback (#386)
+        # restores the pre-apply sshd_config via backup_files.
+        'sshd_hardening': {
+            'check': """grep -qiE '^[[:space:]]*PermitRootLogin[[:space:]]+(no|prohibit-password)' /etc/ssh/sshd_config 2>/dev/null && grep -qiE '^[[:space:]]*MaxAuthTries[[:space:]]+[1-4]([[:space:]]|$)' /etc/ssh/sshd_config 2>/dev/null && grep -qiE '^[[:space:]]*X11Forwarding[[:space:]]+no' /etc/ssh/sshd_config 2>/dev/null && echo OK || echo FAIL""",
+            'verbose_check': """grep -iE '^[[:space:]]*(PermitRootLogin|MaxAuthTries|X11Forwarding|ClientAliveInterval|ClientAliveCountMax|LoginGraceTime|AllowTcpForwarding|PermitEmptyPasswords)' /etc/ssh/sshd_config 2>/dev/null || echo '(no access-hardening directives found)'""",
+            'apply': """cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.cis-sshd
+sed -i -E -e '/^[[:space:]]*PermitRootLogin[[:space:]]/Id' -e '/^[[:space:]]*MaxAuthTries[[:space:]]/Id' -e '/^[[:space:]]*X11Forwarding[[:space:]]/Id' -e '/^[[:space:]]*ClientAliveInterval[[:space:]]/Id' -e '/^[[:space:]]*ClientAliveCountMax[[:space:]]/Id' -e '/^[[:space:]]*LoginGraceTime[[:space:]]/Id' -e '/^[[:space:]]*AllowTcpForwarding[[:space:]]/Id' -e '/^[[:space:]]*PermitEmptyPasswords[[:space:]]/Id' /etc/ssh/sshd_config
+cat >> /etc/ssh/sshd_config << 'SSHDHEOF'
+
+# CIS SSH access hardening (#433) - applied by PegaProx
+PermitRootLogin prohibit-password
+MaxAuthTries 4
+X11Forwarding no
+ClientAliveInterval 300
+ClientAliveCountMax 3
+LoginGraceTime 60
+AllowTcpForwarding no
+PermitEmptyPasswords no
+SSHDHEOF
+if sshd -t 2>/dev/null; then
+  systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
+else
+  cp /etc/ssh/sshd_config.bak.cis-sshd /etc/ssh/sshd_config
+  systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
+fi
+echo DONE""",
+            'backup_files': ['/etc/ssh/sshd_config'],
+            'rollback_post': "sshd -t 2>/dev/null && (systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null) || true",
+        },
+        # NS #434 — strip the `nullok` flag (PAM accepting empty passwords) from
+        # every /etc/pam.d file. Rollback (#386) restores the common-* files.
+        'pam_nullok_removal': {
+            'check': """grep -rlE 'nullok' /etc/pam.d/ >/dev/null 2>&1 && echo FAIL || echo OK""",
+            'verbose_check': """grep -rlE 'nullok' /etc/pam.d/ 2>/dev/null || echo '(no nullok flags in /etc/pam.d)'""",
+            'apply': """for pf in $(grep -rlE 'nullok' /etc/pam.d/ 2>/dev/null); do
+  cp -p "$pf" "${pf}.bak.cis-nullok"
+  sed -i -E 's/[[:space:]]nullok([[:space:]]|$)/ /g' "$pf"
+done
+echo DONE""",
+            'backup_files': ['/etc/pam.d/common-auth', '/etc/pam.d/common-password', '/etc/pam.d/common-account'],
         },
         'pam_faillock': {
             'check': """[ -f /etc/security/faillock.conf.d/cis-faillock.conf ] && echo OK || echo FAIL""",
@@ -14935,7 +15020,7 @@ echo DONE""",
         'audit_immutable': {
             'check': """grep -q '^-e 2' /etc/audit/rules.d/99-finalize.rules 2>/dev/null && echo OK || echo FAIL""",
             'apply': """cat > /etc/audit/rules.d/99-finalize.rules << 'IMEOF'
-# CIS 6.2.3.36 / STIG V-270832: Make audit configuration immutable
+# STIG V-270832 (UBTU-24) / CIS audit-config immutability: Make audit configuration immutable (-e 2)
 # This MUST be the last rule loaded - requires reboot to change
 -e 2
 IMEOF
@@ -15220,7 +15305,7 @@ echo DONE""",
             'apply': "echo 'INFORMATIONAL: configure disk encryption manually per BSI guidance'; echo DONE",
         },
         'vsnfd_audit_retention': {
-            'check': """RETENTION=$(grep -h '^MaxRetentionSec' /etc/systemd/journald.conf /etc/systemd/journald.conf.d/*.conf 2>/dev/null | tail -1 | awk -F= '{print $2}' | tr -d ' '); if [ -n "$RETENTION" ]; then case "$RETENTION" in *month|*M) NUM=${RETENTION%[mM]*}; [ "$NUM" -ge 6 ] && echo OK || echo FAIL ;; *year|*Y) echo OK ;; *) echo FAIL ;; esac; else echo FAIL; fi""",
+            'check': """RETENTION=$(grep -h '^MaxRetentionSec' /etc/systemd/journald.conf /etc/systemd/journald.conf.d/*.conf 2>/dev/null | tail -1 | awk -F= '{print $2}' | tr -d ' '); if [ -n "$RETENTION" ]; then case "$RETENTION" in *month|*M) NUM=${RETENTION%[mM]*}; [ "$NUM" -ge 6 ] && echo OK || echo FAIL ;; *year|*Y) echo OK ;; *week|*w) NUM=${RETENTION%[wW]*}; [ "$NUM" -ge 26 ] && echo OK || echo FAIL ;; *day|*d) NUM=${RETENTION%[dD]*}; [ "$NUM" -ge 180 ] && echo OK || echo FAIL ;; *[!0-9]*) echo FAIL ;; *) [ "$RETENTION" -ge 15552000 ] && echo OK || echo FAIL ;; esac; else echo FAIL; fi""",
             'verbose_check': """echo '--- journald retention configuration ---'; grep -h 'MaxRetentionSec\\|SystemMaxUse\\|Storage' /etc/systemd/journald.conf /etc/systemd/journald.conf.d/*.conf 2>/dev/null || echo '  (no MaxRetentionSec configured)'; echo '--- current journal size ---'; journalctl --disk-usage 2>/dev/null""",
             'apply': "echo 'INFORMATIONAL: set MaxRetentionSec=6month (or higher) in /etc/systemd/journald.conf manually'; echo DONE",
         },
@@ -15391,11 +15476,56 @@ echo DONE""",
                             vals[k] = v
                         # else: silently dropped (defaults remain)
                 cmd = cmd.format(**vals)
+            # NS #386: snapshot the files this control edits BEFORE applying, so the
+            # change can be rolled back. Only the first apply backs up (preserves
+            # the true pre-hardening state); a re-apply won't clobber the original.
+            bf = check.get('backup_files')
+            if bf:
+                pre = '; '.join(
+                    '{ [ -f %s ] && [ ! -f %s ] && cp -p %s %s; } || true' % (
+                        shlex.quote(f), shlex.quote(f + '.pegaprox-bak.' + ctrl_id),
+                        shlex.quote(f), shlex.quote(f + '.pegaprox-bak.' + ctrl_id))
+                    for f in bf
+                )
+                cmd = pre + '; ' + cmd
             result = self._ssh_node_output(node_name, cmd, timeout=60)
             if result is not None and 'DONE' in result:
                 out[ctrl_id] = {'success': True}
             else:
                 out[ctrl_id] = {'success': False, 'error': result or 'SSH command failed'}
+        return out
+
+    def rollback_node_hardening(self, node_name, controls):
+        """Restore the config files a CIS control changed, from the snapshot taken
+        at apply time (#386). Only controls that declare backup_files can roll back."""
+        all_checks = self._all_hardening_controls()
+        out = {}
+        for ctrl_id in controls:
+            ctrl = all_checks.get(ctrl_id)
+            if not ctrl:
+                out[ctrl_id] = {'success': False, 'error': 'unknown control'}
+                continue
+            bf = ctrl.get('backup_files')
+            if not bf:
+                out[ctrl_id] = {'success': False, 'error': 'control has no rollback snapshot (not reversible)'}
+                continue
+            steps = []
+            for f in bf:
+                bak = f + '.pegaprox-bak.' + ctrl_id
+                qf, qb = shlex.quote(f), shlex.quote(bak)
+                steps.append('if [ -f %s ]; then cp -p %s %s && rm -f %s && echo RESTORED:%s; else echo NOBACKUP:%s; fi'
+                             % (qb, qb, qf, qb, ctrl_id, ctrl_id))
+            post = ctrl.get('rollback_post')
+            if post:
+                steps.append('{ %s ; } || true' % post)
+            steps.append('echo DONE')
+            result = self._ssh_node_output(node_name, ' ; '.join(steps), timeout=60)
+            if result and 'DONE' in result and 'RESTORED:' in result:
+                out[ctrl_id] = {'success': True}
+            elif result and 'NOBACKUP:' in result and 'RESTORED:' not in result:
+                out[ctrl_id] = {'success': False, 'error': 'no snapshot found — control was never applied (or already rolled back)'}
+            else:
+                out[ctrl_id] = {'success': False, 'error': (result or 'SSH command failed')[:300]}
         return out
 
     def _fetch_qemu_ips(self, node: str, vmid: int) -> list:

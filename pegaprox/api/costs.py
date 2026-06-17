@@ -31,6 +31,7 @@ from flask import Blueprint, jsonify, request
 
 from pegaprox.globals import cluster_managers
 from pegaprox.utils.auth import require_auth
+from pegaprox.utils.sanitization import sanitize_csv_field
 from pegaprox.api.helpers import check_cluster_access, load_metrics_window
 from pegaprox.core.db import get_db
 from pegaprox.models.permissions import ROLE_ADMIN
@@ -355,3 +356,100 @@ def per_vm(cluster_id):
         'rates': rates,
         'rows': rows,
     })
+
+
+@bp.route('/api/tenants/<tenant_id>/chargeback', methods=['GET'])
+@require_auth(perms=['admin.tenants'])
+def tenant_chargeback(tenant_id):
+    """#502 — per-tenant cost rollup (chargeback/showback). Aggregates per-VM
+    costs across the tenant's clusters into a statement: per-cluster subtotals +
+    a per-VM breakdown + a monthly extrapolation. On-demand (no persistence).
+    Query: ?days=1..30 (default 30), ?format=csv for a CSV download."""
+    try:
+        import pegaprox.utils.rbac as _rbac
+        try:
+            days = max(1, min(int(request.args.get('days', '30')), 30))
+        except Exception:
+            days = 30
+        fmt = (request.args.get('format') or 'json').lower()
+
+        # NS #502 — refresh the cached tenants global so get_user_clusters() below
+        # sees the tenant's current cluster assignment (it goes stale after an edit).
+        _rbac.tenants_db = _rbac.load_tenants()
+        tenant = (_rbac.tenants_db or {}).get(tenant_id)
+        if not tenant:
+            return jsonify({'error': 'tenant not found'}), 404
+
+        # MK Jun 2026 (sec-review) — admin.tenants can be a tenant-scoped custom role;
+        # scope to the caller's own tenant unless a real admin, else one tenant could
+        # read another tenant's full VM inventory + per-VM cost breakdown (BOLA).
+        if request.session.get('role') != _rbac.ROLE_ADMIN:
+            _caller = get_db().get_user(request.session.get('user', '')) or {}
+            if tenant_id != _caller.get('tenant_id', _rbac.DEFAULT_TENANT_ID):
+                return jsonify({'error': 'Access denied to this tenant'}), 403
+        allowed = _rbac.get_user_clusters({'role': _rbac.ROLE_VIEWER, 'tenant_id': tenant_id})  # None = all clusters
+
+        factor = 30.0 / days if days < 30 else 1.0
+        by_cluster = []
+        all_rows = []
+        grand_total = 0.0
+        currency = 'EUR'
+        for cid, mgr in cluster_managers.items():
+            if allowed is not None and cid not in allowed:
+                continue
+            cname = getattr(getattr(mgr, 'config', None), 'name', cid) or cid
+            try:
+                rates = _get_rates(cid)
+                currency = rates.get('currency', currency) or currency
+                snaps = _load_history(cid, days=days)
+                if not snaps:
+                    by_cluster.append({'cluster_id': cid, 'cluster_name': cname, 'subtotal': 0.0,
+                                       'monthly_subtotal': 0.0, 'vm_count': 0, 'enough_data': False})
+                    continue
+                rows = _compute_per_vm(snaps, mgr, rates, days * 24)
+                for r in rows:
+                    r['cluster_id'] = cid
+                    r['cluster_name'] = cname
+                    r['monthly_total'] = round(r['cost_total'] * factor, 2)
+                sub = round(sum(r['cost_total'] for r in rows), 2)
+                grand_total += sub
+                all_rows.extend(rows)
+                by_cluster.append({'cluster_id': cid, 'cluster_name': cname, 'subtotal': sub,
+                                   'monthly_subtotal': round(sub * factor, 2), 'vm_count': len(rows),
+                                   'enough_data': True})
+            except Exception as ce:
+                logging.warning(f"[chargeback] cluster {cid} failed: {ce}")
+        grand_total = round(grand_total, 2)
+        all_rows.sort(key=lambda r: r.get('cost_total', 0), reverse=True)
+
+        if fmt == 'csv':
+            import io, csv
+            from flask import Response
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(['cluster', 'vmid', 'name', 'type', 'cores', 'memory_gb', 'disk_gb',
+                        'cost_cpu', 'cost_memory', 'cost_storage', f'cost_total_{days}d', 'monthly_total', 'currency'])
+            for r in all_rows:
+                # NS #502 — neutralise CSV formula injection (CWE-1236) on the
+                # user-controlled string cells (VM/cluster names); numbers stay raw
+                w.writerow([sanitize_csv_field(r.get('cluster_name')), r.get('vmid'),
+                            sanitize_csv_field(r.get('name')), sanitize_csv_field(r.get('type')),
+                            r.get('cores'), r.get('memory_gb'), r.get('disk_gb'), r.get('cost_cpu'),
+                            r.get('cost_memory'), r.get('cost_storage'), r.get('cost_total'),
+                            r.get('monthly_total'), currency])
+            return Response(buf.getvalue(), mimetype='text/csv',
+                            headers={'Content-Disposition': f'attachment; filename="chargeback-{tenant_id}-{days}d.csv"'})
+
+        return jsonify({
+            'tenant_id': tenant_id,
+            'tenant_name': tenant.get('name', tenant_id),
+            'days': days,
+            'currency': currency,
+            'total': grand_total,
+            'monthly_total': round(grand_total * factor, 2),
+            'by_cluster': by_cluster,
+            'rows': all_rows,
+        })
+    except Exception:
+        logging.exception('handler error in costs.py (chargeback)')
+        return jsonify({'error': 'internal error'}), 500

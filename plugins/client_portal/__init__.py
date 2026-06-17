@@ -13,7 +13,7 @@ from flask import request, jsonify, send_file
 
 from pegaprox.api.plugins import register_plugin_route
 from pegaprox.globals import cluster_managers
-from pegaprox.utils.rbac import load_vm_acls, user_can_access_vm, get_user_permissions
+from pegaprox.utils.rbac import load_vm_acls, user_can_access_vm, get_user_permissions, get_user_pool_vmids
 from pegaprox.utils.auth import load_users
 
 PLUGIN_NAME = "Client Portal"
@@ -31,6 +31,13 @@ def _load_config():
 def _get_portal_config():
     """Return portal configuration (public, no secrets)"""
     cfg = _load_config()
+    # MK #547 — the portal console needs to know if a reverse proxy is in front
+    # so it routes the VNC websocket through the main port instead of port+1.
+    try:
+        from pegaprox.api.helpers import load_server_settings
+        rp_enabled = bool(load_server_settings().get('reverse_proxy_enabled', False))
+    except Exception:
+        rp_enabled = False
     return {
         'portal_title': cfg.get('portal_title', 'Client Portal'),
         'allowed_actions': cfg.get('allowed_actions', []),
@@ -40,6 +47,7 @@ def _get_portal_config():
         'allow_snapshots': cfg.get('allow_snapshots', False),
         'custom_logo_url': cfg.get('custom_logo_url', ''),
         'theme_color': cfg.get('theme_color', '#e57000'),
+        'reverse_proxy_enabled': rp_enabled,
     }
 
 
@@ -73,6 +81,11 @@ def _get_my_vms():
             acl_users = acl.get('users', [])
             if username in acl_users or '*' in acl_users:
                 user_vmids.add(int(vmid_str))
+
+        # #555 — pool-only users: include VMs reachable via their resource-pool perms.
+        # Mirrors user_can_access_vm's pool branch (the action endpoints already honour it),
+        # so a user added to a pool sees the pool's VMs without a per-VM ACL each.
+        user_vmids |= get_user_pool_vmids(user, cluster_id)
 
         if not user_vmids:
             continue

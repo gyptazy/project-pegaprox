@@ -5974,7 +5974,11 @@
             const frameworks = [
                 { id: 'bsi', name: 'BSI IT-Grundschutz', region: 'EU', controls: ['fs_modules','core_dumps','mount_options','cron_hardening','journald','ssh_perms','ssh_crypto','pam_faillock','pw_history','pw_quality','pw_aging','pw_hash_rounds','file_perms','login_banners','file_integrity','process_acct','session_limit','inactive_accounts','shell_timeout','default_umask','pam_tmpdir','audit_boot','audit_rules','aide_audit_protect','mem_protection','apparmor','sysctl_hardening','auditd_service'] },
                 { id: 'iso', name: 'ISO 27001 (Annex A)', region: 'EU', controls: ['ssh_perms','ssh_crypto','pam_faillock','pw_history','pw_quality','pw_aging','pw_hash_rounds','file_perms','login_banners','file_integrity','process_acct','audit_boot','audit_rules','aide_audit_protect','audit_immutable','session_limit','inactive_accounts','shell_timeout','core_dumps','mount_options','mem_protection','apparmor','journald','default_umask','cron_hardening','auditd_service','sysctl_hardening'] },
-                { id: 'nis2', name: 'NIS2 / KRITIS', region: 'EU', controls: ['ssh_perms','ssh_crypto','pam_faillock','pw_history','pw_quality','pw_aging','file_perms','login_banners','file_integrity','process_acct','audit_boot','audit_rules','aide_audit_protect','audit_immutable','session_limit','inactive_accounts','mem_protection','apparmor','sysctl_hardening','auditd_service','journald','mount_options'] },
+                // NS: NIS2/KRITIS is an organizational + legal obligation (risk-mgmt, incident
+                // reporting, governance) — NOT a technical control catalogue. No backend mapping
+                // exists, so this is an INDICATOR of how many security-relevant hardening controls
+                // pass, never a NIS2 assessment. informational => no downloadable "assessment" PDF.
+                { id: 'nis2', name: 'NIS2 / KRITIS', region: 'EU', controls: ['ssh_perms','ssh_crypto','pam_faillock','pw_history','pw_quality','pw_aging','file_perms','login_banners','file_integrity','process_acct','audit_boot','audit_rules','aide_audit_protect','audit_immutable','session_limit','inactive_accounts','mem_protection','apparmor','sysctl_hardening','auditd_service','journald','mount_options'], informational: true, note: 'Indicator only — NIS2/KRITIS is an organizational & legal obligation, not a hardening checklist. Hardening-control coverage shown, not a NIS2 assessment.' },
                 { id: 'vsnfd', name: 'VS-NfD (BSI)', region: 'EU', controls: ['vsnfd_disk_encryption','vsnfd_audit_retention','vsnfd_journald_size','vsnfd_secure_boot','vsnfd_kernel_lockdown','vsnfd_password_min_12'] },
                 { id: 'cmmc1', name: 'CMMC L1 (FAR 52.204-21)', region: 'US', controls: ['ssh_perms','pam_faillock','pw_history','pw_quality','pw_aging','file_perms','login_banners','debsums','file_integrity','audit_boot','audit_rules','sysctl_hardening','auditd_service','mem_protection','apparmor'] },
                 { id: 'cmmc2', name: 'CMMC L2 / NIST 800-171', region: 'US', controls: ['fs_modules','core_dumps','mount_options','journald','ssh_perms','ssh_crypto','pam_faillock','pw_history','pw_quality','pw_aging','pw_hash_rounds','file_perms','session_limit','inactive_accounts','shell_timeout','file_integrity','process_acct','audit_boot','audit_rules','aide_audit_protect','sysctl_hardening','mem_protection','apparmor','auditd_service','debsums','pkg_cleanup'] },
@@ -6644,7 +6648,8 @@
                                             )}
                                             <button
                                                 onClick={() => downloadFrameworkReport(fw)}
-                                                disabled={!hasData || !selectedCluster}
+                                                /* NS: no audit-report PDF for informational frameworks (NIS2/FIPS) — they have no backend control mapping */
+                                                disabled={!hasData || !selectedCluster || fw.informational}
                                                 className="mt-1 text-xs px-2 py-1 rounded border border-proxmox-border text-gray-300 hover:bg-proxmox-hover disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5">
                                                 <Icons.Download className="w-3 h-3" />
                                                 {t('downloadReport') || 'Download report (PDF)'}
@@ -7332,7 +7337,7 @@
                                                 {t('drDrillTitle') || 'DR Drill'} — {drDrillModal.plan?.name}
                                             </h3>
                                             <p className="text-xs text-gray-500 mt-1">
-                                                {t('drDrillSubtitle') || 'Structured dry-run validating that this Site Recovery plan would succeed if invoked. Generates compliance evidence (SOC 2 / ISO 22301 / NIS2 BCM).'}
+                                                {t('drDrillSubtitle') || 'Structured dry-run validating that this Site Recovery plan would succeed if invoked. Generates compliance evidence (BCM / DR gap-analysis evidence).'}
                                             </p>
                                         </div>
                                         {drDrillData?.status && drDrillData.status !== 'running' && (
@@ -7776,7 +7781,7 @@
             const [vmwareMigrations, setVmwareMigrations] = useState([]);
             const [vmwareMigrateForm, setVmwareMigrateForm] = useState({
                 target_cluster:'',target_node:'',target_storage:'',esxi_password:'',network_bridge:'vmbr0',
-                start_after:true,remove_source:false,transfer_mode:'auto',bios:'auto',preserve_mac:true,
+                start_after:true,remove_source:false,transfer_mode:'vmkfstools_clone',bios:'auto',preserve_mac:true,
                 // hardware overrides (#222)
                 ostype:'auto',scsihw:'auto',disk_bus:'auto',vga:'vmware',net_driver:'auto',
                 sockets:0,cores_per_socket:0,memory:0,cpu_type:'host',
@@ -8108,6 +8113,8 @@
             // NS Apr 2026 #213 — channels loaded lazily when modal opens
             const [alertChannels, setAlertChannels] = useState([]);
             const [pickedChannels, setPickedChannels] = useState(['email']);
+            const [activeAlerts, setActiveAlerts] = useState([]);  // NS #501 — firing incidents
+            const [escSteps, setEscSteps] = useState([]);  // NS #501 — escalation steps in the create modal
             const [clusterAffinityRules, setClusterAffinityRules] = useState([]);
             const [showAffinityModal, setShowAffinityModal] = useState(false);
             
@@ -9581,7 +9588,24 @@
                     console.error('Failed to toggle alert:', err);
                 }
             };
-            
+
+            // NS #501 — currently-firing incidents (ack + escalation)
+            const loadActiveAlerts = async (clusterId) => {
+                if (!clusterId) return;
+                try {
+                    const r = await authFetch(`${API_URL}/clusters/${clusterId}/active-alerts`);
+                    if (r && r.ok) { const d = await r.json(); setActiveAlerts(d.active_alerts || []); }
+                    else setActiveAlerts([]);
+                } catch (e) { setActiveAlerts([]); }
+            };
+            const ackAlert = async (firedId) => {
+                if (!selectedCluster?.id) return;
+                try {
+                    const r = await authFetch(`${API_URL}/clusters/${selectedCluster.id}/active-alerts/${firedId}/ack`, { method: 'POST' });
+                    if (r && r.ok) { addToast(t('alertAcked') || 'Alert acknowledged', 'success'); loadActiveAlerts(selectedCluster.id); }
+                } catch (e) { console.error('Failed to ack alert:', e); }
+            };
+
             // ============================================
             // Cluster Affinity Rules Functions - NS Jan 2026
             // ============================================
@@ -9816,6 +9840,36 @@
                 }
             };
 
+            // NS #386: restore selected controls to their pre-apply snapshot.
+            const rollbackHardening = async () => {
+                if (!selectedCluster?.id || !hardenNode) return;
+                const toRoll = Object.keys(hardenSelected).filter(k => hardenSelected[k]);
+                if (!toRoll.length) { addToast(t('noControlsSelected') || 'No controls selected', 'warning'); return; }
+                if (!confirm(t('hardenRollbackConfirm') || `↩️ Restore ${toRoll.length} control(s) on "${hardenNode}" to their pre-apply state?\n\nOnly controls applied through PegaProx (with a saved snapshot) can be rolled back.`)) return;
+                setHardenApplying(true);
+                try {
+                    const resp = await authFetch(`${API_URL}/clusters/${selectedCluster.id}/nodes/${hardenNode}/hardening/rollback`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ controls: toRoll })
+                    });
+                    if (resp && resp.ok) {
+                        const data = await resp.json();
+                        setHardenResults({ ...(data.results || {}) });
+                        const n = data.restored || 0;
+                        addToast(`${n}/${toRoll.length} ${t('controlsRolledBack') || 'controls rolled back'}`, n === toRoll.length ? 'success' : 'warning');
+                        checkHardening(hardenNode, hardenVerbose, hardenProfile);
+                    } else {
+                        const errData = await resp?.json().catch(() => ({}));
+                        addToast('Error: ' + (errData?.error || `HTTP ${resp?.status}`), 'error');
+                    }
+                } catch (e) {
+                    addToast('Error: ' + e.message, 'error');
+                } finally {
+                    setHardenApplying(false);
+                }
+            };
+
             // Load favorites and summary on mount
             useEffect(() => {
                 if (user) {
@@ -9838,6 +9892,7 @@
                 if (activeTab === 'automation' && selectedCluster?.id) {
                     loadClusterTags(selectedCluster.id);
                     loadClusterAlerts(selectedCluster.id);
+                    loadActiveAlerts(selectedCluster.id);  // NS #501
                     loadClusterAffinityRules(selectedCluster.id);
                     loadCustomScripts(selectedCluster.id);
                 }
@@ -12933,6 +12988,10 @@
                             label: t('fixQemuArgs') || 'Fix QEMU args (after disk-bus change)',
                             icon: <Icons.Wrench className="w-3.5 h-3.5" />,
                             onClick: async () => {
+                                // LW #424 - the args: line PVE writes here blocks live- and
+                                // cross-cluster migration, and the old version gave zero feedback
+                                // that it had changed anything. Make the trade-off explicit.
+                                if (!window.confirm(t('fixQemuArgsConfirm') || 'This writes custom QEMU args (args:) onto the VM config to repair disk sector sizes after a bus change. Heads-up: VMs that carry custom args can no longer be live- or cross-cluster-migrated by Proxmox. Continue?')) return;
                                 try {
                                     const res = await authFetch(`${API_URL}/clusters/${cId}/vms/${vm.node}/qemu/${vm.vmid}/fix-args`, { method: 'POST' });
                                     const data = await res?.json().catch(() => ({}));
@@ -15574,6 +15633,7 @@
                                                                 onClick={async () => {
                                                                     setShowAlertModal(true);
                                                                     setPickedChannels(['email']);
+                                                                    setEscSteps([]);  // NS #501
                                                                     try {
                                                                         const r = await fetch('/api/alert-channels', { credentials: 'include' });
                                                                         if (r.ok) {
@@ -15588,6 +15648,40 @@
                                                             </button>
                                                         </div>
                                                         
+                                                        {/* NS #501 — currently firing incidents (severity + ack) */}
+                                                        {activeAlerts.length > 0 && (
+                                                            <div className="space-y-2">
+                                                                <div className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+                                                                    <Icons.AlertTriangle className="w-4 h-4 text-amber-400" />
+                                                                    {t('activeAlerts') || 'Active Alerts'} <span className="text-xs text-gray-500">({activeAlerts.length})</span>
+                                                                </div>
+                                                                {activeAlerts.map(a => (
+                                                                    <div key={a.id} className={`flex items-center justify-between p-3 rounded-lg border ${a.acked_at ? 'bg-proxmox-darker border-proxmox-darker opacity-70' : 'bg-amber-500/10 border-amber-500/30'}`}>
+                                                                        <div className="flex items-center gap-3 min-w-0">
+                                                                            <span className={`px-1.5 py-0.5 text-[10px] rounded uppercase font-mono shrink-0 ${
+                                                                                a.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                                                                                a.severity === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
+                                                                                'bg-blue-500/20 text-blue-400'
+                                                                            }`}>{a.severity}</span>
+                                                                            <div className="min-w-0">
+                                                                                <div className="text-sm truncate">{a.message || `${a.metric} ${a.operator} ${a.threshold}`}</div>
+                                                                                <div className="text-xs text-gray-500">
+                                                                                    {fmtDate ? fmtDate(a.triggered_at) : a.triggered_at}
+                                                                                    {a.escalation_step > 0 && <span className="text-amber-400 ml-2">↑ {t('escStep') || 'esc'} {a.escalation_step}</span>}
+                                                                                    {a.acked_at && <span className="text-green-400 ml-2">✓ {t('acked') || 'acked'}{a.acked_by ? ` (${a.acked_by})` : ''}</span>}
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                        {!a.acked_at && (
+                                                                            <button onClick={() => ackAlert(a.id)} className="px-3 py-1.5 text-xs bg-proxmox-dark hover:bg-proxmox-hover border border-proxmox-border rounded-lg shrink-0">
+                                                                                {t('acknowledge') || 'Acknowledge'}
+                                                                            </button>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
+
                                                         {clusterAlerts.length === 0 ? (
                                                             <div className="bg-proxmox-dark rounded-xl p-8 text-center">
                                                                 <Icons.Bell className="mx-auto mb-3 w-10 h-10 text-gray-600" />
@@ -15903,19 +15997,21 @@
                                                         )}
 
                                                         {hardenStatus && !hardenLoading && (() => {
-                                                            // CIS Benchmark controls
+                                                            // CIS Debian 12 Benchmark v1.1.0 item refs (Proxmox is Debian-based). NS 2026-06-15: web-verified + renumbered off the old Distribution-Independent/Debian-10 scheme.
                                                             const cisControls = {
                                                                 fs_modules: { ref: '1.1.1.1-1.1.1.5', title: t('cisFs') || 'Disable Unused Filesystem Modules', desc: t('cisFsDesc') || 'Prevents loading of rarely-used filesystem kernel modules (cramfs, freevxfs, hfs, hfsplus, jffs2)', impact: t('cisFsImpact') || 'None - VMs and containers unaffected' },
-                                                                core_dumps: { ref: '1.5.11-1.5.13', title: t('cisCoreDumps') || 'Disable Core Dumps', desc: t('cisCoreDumpsDesc') || 'Prevents the system from creating memory dumps when programs crash that can contain passwords and keys', impact: t('cisCoreDumpsImpact') || 'None - VM crashes still logged normally' },
-                                                                mount_options: { ref: '1.6.1', title: t('cisMounts') || 'Mount Options Hardening', desc: t('cisMountsDesc') || 'Applies nodev, nosuid, noexec to /tmp, /var/tmp, /dev/shm to prevent privilege escalation', impact: t('cisMountsImpact') || 'No impact on cluster operations or VMs' },
+                                                                core_dumps: { ref: '1.5.3', title: t('cisCoreDumps') || 'Disable Core Dumps', desc: t('cisCoreDumpsDesc') || 'Prevents the system from creating memory dumps when programs crash that can contain passwords and keys', impact: t('cisCoreDumpsImpact') || 'None - VM crashes still logged normally' },
+                                                                mount_options: { ref: '1.1.2.1-1.1.2.5', title: t('cisMounts') || 'Mount Options Hardening', desc: t('cisMountsDesc') || 'Applies nodev, nosuid, noexec to /tmp, /var/tmp, /dev/shm to prevent privilege escalation', impact: t('cisMountsImpact') || 'No impact on cluster operations or VMs' },
                                                                 cron_hardening: { ref: '2.4.1.2-2.4.2.1', title: t('cisCron') || 'Cron/At Access Hardening', desc: t('cisCronDesc') || 'Restricts job scheduler access to root only, preventing persistence attacks', impact: t('cisCronImpact') || 'None - PVE scheduled tasks run as root' },
-                                                                net_protocols: { ref: '3.2.1-3.2.2', title: t('cisNet') || 'Disable Unused Network Protocols', desc: t('cisNetDesc') || 'Prevents loading of rarely-used network protocols (dccp, sctp, rds, tipc)', impact: t('cisNetImpact') || 'None - not used by Proxmox' },
-                                                                journald: { ref: '4.2.1.1-4.2.1.4', title: t('cisJournald') || 'Journald Hardening', desc: t('cisJournaldDesc') || 'Configures persistent, compressed logging that survives reboots for forensic analysis', impact: t('cisJournaldImpact') || 'Better forensic capabilities' },
+                                                                net_protocols: { ref: '3.2.1-3.2.4', title: t('cisNet') || 'Disable Unused Network Protocols', desc: t('cisNetDesc') || 'Prevents loading of rarely-used network protocols (dccp, sctp, rds, tipc)', impact: t('cisNetImpact') || 'None - not used by Proxmox' },
+                                                                journald: { ref: '6.2.1.1.5-6.2.1.1.6', title: t('cisJournald') || 'Journald Hardening', desc: t('cisJournaldDesc') || 'Configures persistent, compressed logging that survives reboots for forensic analysis', impact: t('cisJournaldImpact') || 'Better forensic capabilities' },
                                                                 ssh_perms: { ref: '5.1.1-5.1.3', title: t('cisSshPerms') || 'SSH File Permissions', desc: t('cisSshPermsDesc') || 'Sets secure permissions (600) on SSH config and host keys', impact: t('cisSshPermsImpact') || 'None - SSH works normally' },
-                                                                ssh_crypto: { ref: '5.1.4-5.1.22', title: t('cisSshCrypto') || 'SSH Cryptographic Hardening', desc: t('cisSshCryptoDesc') || 'Configures SSH to use only strong ciphers (AES-GCM/CTR), secure key exchange (Curve25519), and strong MACs (SHA2-ETM)', impact: t('cisSshCryptoImpact') || 'Very old SSH clients may not connect' },
-                                                                pam_faillock: { ref: '5.3.3.1', title: t('cisPam') || 'Account Lockout (pam_faillock)', desc: t('cisPamDesc') || 'Locks accounts after 5 failed login attempts, auto-unlocks after 10 minutes. Root excluded.', impact: t('cisPamImpact') || 'Works alongside Fail2Ban for defense in depth' },
+                                                                ssh_crypto: { ref: '5.1.6, 5.1.12, 5.1.15', title: t('cisSshCrypto') || 'SSH Cryptographic Hardening', desc: t('cisSshCryptoDesc') || 'Configures SSH to use only strong ciphers (AES-GCM/CTR), secure key exchange (Curve25519), and strong MACs (SHA2-ETM)', impact: t('cisSshCryptoImpact') || 'Very old SSH clients may not connect' },
+                                                                sshd_hardening: { ref: '5.1.x (#433)', title: t('cisSshdHardening') || 'SSH Access Hardening', desc: t('cisSshdHardeningDesc') || 'Key-only root (PermitRootLogin prohibit-password), MaxAuthTries 4, X11Forwarding off, idle timeout, no empty passwords. PasswordAuthentication is left untouched so password users are not locked out.', impact: t('cisSshdHardeningImpact') || 'Root password login disabled (key login keeps working). Reversible via Rollback Selected.' },
+                                                                pam_nullok_removal: { ref: '5.3.3.4.1 (#434)', title: t('cisPamNullok') || 'Remove PAM nullok (block empty passwords)', desc: t('cisPamNullokDesc') || 'Strips the nullok flag from every /etc/pam.d/* file so accounts with a blank password can no longer authenticate.', impact: t('cisPamNullokImpact') || 'Accounts with empty passwords can no longer log in. Reversible via Rollback Selected.' },
+                                                                pam_faillock: { ref: '5.3.3.1.1-5.3.3.1.2', title: t('cisPam') || 'Account Lockout (pam_faillock)', desc: t('cisPamDesc') || 'Locks accounts after 5 failed login attempts, auto-unlocks after 10 minutes. Root excluded.', impact: t('cisPamImpact') || 'Works alongside Fail2Ban for defense in depth' },
                                                                 shell_timeout: { ref: '5.4.3.2', title: t('cisTimeout') || 'Shell Timeout', desc: t('cisTimeoutDesc') || 'Automatically logs out inactive shell sessions after 15 minutes', impact: t('cisTimeoutImpact') || 'Only interactive SSH sessions affected' },
-                                                                file_perms: { ref: '6.1', title: t('cisFilePerms') || 'System File Permissions', desc: t('cisFilePermsDesc') || 'Sets correct permissions on /etc/passwd, /etc/shadow, /etc/group, /etc/gshadow', impact: t('cisFilePermsImpact') || 'No impact - standard Linux hardening' },
+                                                                file_perms: { ref: '7.1.1-7.1.7', title: t('cisFilePerms') || 'System File Permissions', desc: t('cisFilePermsDesc') || 'Sets correct permissions on /etc/passwd, /etc/shadow, /etc/group, /etc/gshadow', impact: t('cisFilePermsImpact') || 'No impact - standard Linux hardening' },
                                                             };
                                                             // Lynis recommendations
                                                             const lynisControls = {
@@ -16224,6 +16320,16 @@
                                                                                 ? <><Icons.RotateCw className="w-4 h-4 animate-spin" /> {hardenApplyProgress.done}/{hardenApplyProgress.total}: <span className="font-mono text-[11px]">{hardenApplyProgress.current}</span></>
                                                                                 : <><Icons.RotateCw className="w-4 h-4 animate-spin" /> {t('applying') || 'Applying...'}</>
                                                                         ) : <><Icons.Shield className="w-4 h-4" /> {t('applySelected') || 'Apply Selected'} ({selectedCount})</>}
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={rollbackHardening}
+                                                                        disabled={hardenApplying || selectedCount === 0}
+                                                                        title={t('hardenRollbackHint') || 'Restore the selected controls to their pre-apply state (only controls applied via PegaProx)'}
+                                                                        className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 whitespace-nowrap ${
+                                                                            hardenApplying || selectedCount === 0 ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-amber-600 hover:bg-amber-500 text-white'
+                                                                        }`}
+                                                                    >
+                                                                        <Icons.RotateCcw className="w-4 h-4" /> {t('rollbackSelected') || 'Rollback Selected'} ({selectedCount})
                                                                     </button>
                                                                 </div>
 
@@ -20156,14 +20262,16 @@
                                                                 <div>
                                                                     <label className="text-xs text-gray-500 mb-1 block">{t('transferMode') || 'Transfer Mode'}</label>
                                                                     <select value={vmwareMigrateForm.transfer_mode} onChange={e => setVmwareMigrateForm({...vmwareMigrateForm, transfer_mode: e.target.value})} className="w-full px-3 py-2 bg-proxmox-dark border border-proxmox-border rounded-lg text-white text-sm">
+                                                                        <option value="vmkfstools_clone">{t('transferModeVmkClone') || 'Live Clone — Near-Zero Downtime (recommended)'}</option>
                                                                         <option value="auto">{t('transferModeAuto') || 'Auto (Pre-Sync + Delta)'}</option>
-                                                                        <option value="sshfs_boot">{t('transferModeSshfsBoot') || 'Live Mirror — Near-Zero Downtime (recommended)'}</option>
+                                                                        <option value="sshfs_boot">{t('transferModeSshfsBoot') || 'Live Mirror — Near-Zero Downtime'}</option>
                                                                         <option value="snapshot_zero">{t('transferModeSnapshotZero') || 'Snapshot-Iterative — Zero Downtime (experimental)'}</option>
                                                                         <option value="offline">{t('transferModeOffline') || 'Offline Copy (Full Downtime)'}</option>
                                                                     </select>
                                                                     <p className="text-xs text-gray-300 mt-1 leading-relaxed">
                                                                         {vmwareMigrateForm.transfer_mode === 'auto' && (t('transferModeAutoDesc') || 'Tries pre-sync while VM runs, falls back to live-mirror if VMDK is locked')}
                                                                         {vmwareMigrateForm.transfer_mode === 'sshfs_boot' && (t('transferModeSshfsBootDesc') || 'QEMU drive-mirror live-pivots disks from SSHFS-mounted source to local LVM. ~30s real downtime. Multi-disk capable. Recommended for most workloads — limit to 1-2 concurrent VMs to keep mirror throughput high.')}
+                                                                        {vmwareMigrateForm.transfer_mode === 'vmkfstools_clone' && (t('transferModeVmkCloneDesc') || 'Snapshots the running VM and clones the frozen base disk at the vmkernel level on the ESXi host, then imports to Proxmox and cuts over. VM stays up until a short cutover. Works where Live-Mirror / Snapshot-Iterative fail (no locked-base-disk problem). Supports all Proxmox storage types (Ceph/RBD, LVM, LVM-Thin, dir). Needs ESXi SSH enabled.')}
                                                                         {vmwareMigrateForm.transfer_mode === 'snapshot_zero' && (t('transferModeSnapshotZeroDesc') || 'ESXi snapshot rotation — VM stays running through pre-sync + iterative delta sync, only ~10s downtime at cutover. ⚠️ May not work on your system (e.g. ESXi 6.x or VMFS6 with strict locking) — requires ESXi setup that releases base-VMDK lock after snapshot.')}
                                                                         {vmwareMigrateForm.transfer_mode === 'offline' && (t('transferModeOfflineDesc') || 'Stops ESXi VM, copies disks via SSH dd, then starts on Proxmox (full downtime ~ disk-size / network-speed)')}
                                                                     </p>
@@ -22660,6 +22768,8 @@
                                         operator: form.operator.value,
                                         threshold: parseInt(form.threshold.value),
                                         channels,
+                                        severity: form.severity.value,  // NS #501
+                                        escalation: escSteps.filter(s => s.after_minutes > 0),  // NS #501
                                         action: legacyAction,
                                         enabled: true
                                     });
@@ -22748,6 +22858,40 @@
                                         {pickedChannels.length === 0 && (
                                             <div className="text-xs text-gray-500 mt-1">{t('logOnlyHint') || 'No channels selected — the alert will only be logged.'}</div>
                                         )}
+                                    </div>
+                                    {/* NS #501 — severity + escalation steps */}
+                                    <div>
+                                        <label className="block text-sm text-gray-400 mb-1">{t('severity') || 'Severity'}</label>
+                                        <select name="severity" defaultValue="auto" className="w-full px-3 py-2 bg-proxmox-dark border border-proxmox-border rounded-lg">
+                                            <option value="auto">{t('severityAuto') || 'Auto (by value)'}</option>
+                                            <option value="critical">Critical</option>
+                                            <option value="warning">Warning</option>
+                                            <option value="info">Info</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm text-gray-400 mb-1">{t('escalationLabel') || 'Escalation'} <span className="text-xs text-gray-600">({t('optional') || 'optional'})</span></label>
+                                        <div className="space-y-2">
+                                            {escSteps.map((step, i) => (
+                                                <div key={i} className="flex items-center gap-2 bg-proxmox-dark border border-proxmox-border rounded-lg p-2">
+                                                    <span className="text-xs text-gray-400 shrink-0">{t('escAfter') || 'After'}</span>
+                                                    <input type="number" min="1" value={step.after_minutes}
+                                                        onChange={e => setEscSteps(prev => prev.map((s, j) => j === i ? { ...s, after_minutes: parseInt(e.target.value) || 0 } : s))}
+                                                        className="w-16 px-2 py-1 bg-proxmox-darker border border-proxmox-border rounded text-sm" />
+                                                    <span className="text-xs text-gray-400 shrink-0">min &rarr;</span>
+                                                    <select multiple value={step.channels}
+                                                        onChange={e => { const vals = Array.from(e.target.selectedOptions, o => o.value); setEscSteps(prev => prev.map((s, j) => j === i ? { ...s, channels: vals } : s)); }}
+                                                        className="flex-1 min-w-0 px-2 py-1 bg-proxmox-darker border border-proxmox-border rounded text-xs h-14">
+                                                        <option value="email">Email</option>
+                                                        {alertChannels.filter(c => c.enabled !== false).map(c => <option key={c.id} value={c.id}>{c.name || c.id}</option>)}
+                                                    </select>
+                                                    <button type="button" onClick={() => setEscSteps(prev => prev.filter((_, j) => j !== i))} className="p-1 hover:bg-red-500/20 rounded text-gray-500 hover:text-red-400 shrink-0"><Icons.Trash className="w-4 h-4" /></button>
+                                                </div>
+                                            ))}
+                                            <button type="button" onClick={() => setEscSteps(prev => [...prev, { after_minutes: 15, channels: [] }])} className="text-xs text-proxmox-orange hover:text-orange-400 flex items-center gap-1">
+                                                <Icons.Plus className="w-3 h-3" /> {t('addEscStep') || 'Add escalation step'}
+                                            </button>
+                                        </div>
                                     </div>
                                     <div className="flex gap-2 justify-end pt-2">
                                         <button type="button" onClick={() => setShowAlertModal(false)} className="px-4 py-2 bg-proxmox-dark hover:bg-proxmox-hover rounded-lg">

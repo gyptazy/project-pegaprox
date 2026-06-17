@@ -17,6 +17,7 @@ from pegaprox.utils.audit import log_audit
 
 from pegaprox.utils.rbac import (
     has_permission, filter_clusters_for_user, user_can_access_vm,
+    get_user_clusters,
 )
 from pegaprox.api.helpers import get_connected_manager, safe_error, check_cluster_access
 
@@ -138,17 +139,17 @@ def global_search():
     users_db = load_users()
     user_data = users_db.get(user, {})
     user_data['username'] = user
-    is_admin = user_data.get('role') == ROLE_ADMIN
-    
-    # Get user's accessible clusters (respect RBAC)
-    user_clusters = user_data.get('clusters', [])
-    
+    # #285: cluster access is tenant/group-based — resolve via the RBAC helper,
+    # not a non-existent user['clusters'] field. The old read was always [] so
+    # the filter below never fired and non-admins saw every cluster. MK
+    accessible_clusters = get_user_clusters(user_data)  # None = admin / all
+
     # MK: collect tags for the autocomplete dropdown in the frontend
     all_tags = set()
     
     for cluster_id, mgr in cluster_managers.items():
         # Check cluster access - NS: important for multi-tenant setups
-        if not is_admin and user_clusters and cluster_id not in user_clusters:
+        if accessible_clusters is not None and cluster_id not in accessible_clusters:
             continue
         
         if not mgr.is_connected:
@@ -294,9 +295,10 @@ def global_summary():
         user = request.session.get('user', '')
         users_db = load_users()
         user_data = users_db.get(user, {})
-        is_admin = user_data.get('role') == ROLE_ADMIN
-        user_clusters = user_data.get('clusters', [])
-        
+        # #285: tenant/group-based access via the RBAC helper (was reading a
+        # missing user['clusters'] → empty → no filtering). MK
+        accessible_clusters = get_user_clusters(user_data)  # None = admin / all
+
         summary = {
             'clusters': {
                 'total': 0,
@@ -332,7 +334,7 @@ def global_summary():
         
         for cluster_id, mgr in cluster_managers.items():
             # Check cluster access
-            if not is_admin and user_clusters and cluster_id not in user_clusters:
+            if accessible_clusters is not None and cluster_id not in accessible_clusters:
                 continue
             
             summary['clusters']['total'] += 1
@@ -584,9 +586,13 @@ def get_cluster_tags(cluster_id):
     
     Returns unique tags with their colors and usage count
     """
+    # MK Jun 2026 (sec-review) — was unscoped; leaked tags cross-tenant (CWE-285)
+    ok, err = check_cluster_access(cluster_id)
+    if not ok:
+        return err
     tags_db = load_vm_tags()
     cluster_tags = tags_db.get(cluster_id, {})
-    
+
     # Count tag usage
     tag_counts = {}
     for vm_key, vm_tags in cluster_tags.items():
@@ -607,6 +613,9 @@ def get_cluster_tags(cluster_id):
 @require_auth()
 def get_vm_tags(cluster_id, vmid):
     """Get tags for a specific VM"""
+    ok, err = check_cluster_access(cluster_id)  # sec-review: was unscoped (CWE-285)
+    if not ok:
+        return err
     tags_db = load_vm_tags()
     cluster_tags = tags_db.get(cluster_id, {})
     vm_tags = cluster_tags.get(str(vmid), [])
@@ -626,6 +635,11 @@ def update_vm_tags(cluster_id, vmid):
     - tag: Single tag name to add
     - color: Optional color for the tag
     """
+    # MK Jun 2026 (sec-review) — vm.config is global; gate per-cluster so a tenant
+    # user can't write tags onto another tenant's VMs (the DELETE sibling already does)
+    ok, err = check_cluster_access(cluster_id)
+    if not ok:
+        return err
     data = request.json or {}
     tags_db = load_vm_tags()
     
@@ -721,12 +735,13 @@ def search_vms_by_tag():
     user = request.session.get('user', '')
     users_db = load_users()
     user_data = users_db.get(user, {})
-    is_admin = user_data.get('role') == ROLE_ADMIN
-    user_clusters = user_data.get('clusters', [])
-    
+    # #285: tenant/group-based access via the RBAC helper (was reading a missing
+    # user['clusters'] → empty → tags leaked across every cluster). MK
+    accessible_clusters = get_user_clusters(user_data)  # None = admin / all
+
     for cluster_id, cluster_tags in tags_db.items():
         # Check access
-        if not is_admin and user_clusters and cluster_id not in user_clusters:
+        if accessible_clusters is not None and cluster_id not in accessible_clusters:
             continue
         if filter_cluster and cluster_id != filter_cluster:
             continue

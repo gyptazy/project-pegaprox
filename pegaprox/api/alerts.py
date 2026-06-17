@@ -184,6 +184,40 @@ def get_cluster_alerts(cluster_id):
         logging.error(f"Error getting cluster alerts: {e}")
         return jsonify({'alerts': [], 'error': safe_error(e, 'Alert operation failed')})
 
+# NS #501 hardening (F1): bound the escalation chain + channel fan-out so a runaway
+# rule can't flood notification channels or stall the single-threaded alert loop.
+MAX_ESCALATION_STEPS = 10
+MAX_STEP_CHANNELS = 20
+MAX_AFTER_MINUTES = 10080  # cap a step delay at one week
+
+
+def _sanitize_channels(raw):
+    if not isinstance(raw, list):
+        return []
+    return [str(c) for c in raw if isinstance(c, (str, int))][:MAX_STEP_CHANNELS]
+
+
+def _sanitize_escalation(raw):
+    """Normalise an escalation chain to a bounded list of {after_minutes, channels}."""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for s in raw:
+        if not isinstance(s, dict):
+            continue
+        try:
+            after = int(s.get('after_minutes', 0) or 0)
+        except (TypeError, ValueError):
+            after = 0
+        out.append({
+            'after_minutes': max(0, min(after, MAX_AFTER_MINUTES)),
+            'channels': _sanitize_channels(s.get('channels')),
+        })
+        if len(out) >= MAX_ESCALATION_STEPS:
+            break
+    return out
+
+
 @bp.route('/api/clusters/<cluster_id>/alerts', methods=['POST'])
 @require_auth(perms=['cluster.config'])
 def create_cluster_alert(cluster_id):
@@ -203,9 +237,7 @@ def create_cluster_alert(cluster_id):
     # NS May 2026 — used to silently drop `channels` and `cluster_id`, so the
     # background loop never knew where to dispatch and which cluster the alert
     # belonged to. Persist both in the JSON config.
-    channels = data.get('channels')
-    if not isinstance(channels, list):
-        channels = []
+    channels = _sanitize_channels(data.get('channels'))
     alert = {
         'id': str(uuid.uuid4())[:8],
         'name': data.get('name', 'Unnamed Alert'),
@@ -216,6 +248,8 @@ def create_cluster_alert(cluster_id):
         'target_type': data.get('target_type', 'cluster'),
         'target_id': data.get('target_id'),
         'channels': channels,
+        'severity': data.get('severity', 'auto'),  # NS #501: 'auto' | critical | warning | info
+        'escalation': _sanitize_escalation(data.get('escalation')),  # NS #501 (F1: bounded chain)
         'action': data.get('action', 'log'),  # legacy fallback
         'enabled': data.get('enabled', True),
         'created_at': datetime.now().isoformat()
@@ -241,11 +275,13 @@ def update_cluster_alert(cluster_id, alert_id):
     for alert in cluster_alerts:
         if alert['id'] == alert_id:
             for k in ('enabled', 'name', 'threshold', 'metric', 'operator',
-                      'target_type', 'target_id', 'action'):
+                      'target_type', 'target_id', 'action', 'severity'):
                 if k in data:
                     alert[k] = data[k]
-            if 'channels' in data and isinstance(data['channels'], list):
-                alert['channels'] = data['channels']
+            if 'channels' in data:
+                alert['channels'] = _sanitize_channels(data['channels'])
+            if 'escalation' in data:
+                alert['escalation'] = _sanitize_escalation(data['escalation'])  # NS #501 (F1: bounded)
             # ensure cluster_id is always present for older rows
             alert.setdefault('cluster_id', cluster_id)
             save_cluster_alerts(alerts)
@@ -272,6 +308,52 @@ def delete_cluster_alert(cluster_id, alert_id):
         return jsonify({'success': True, 'deleted': deleted})
     except Exception as e:
         logging.error(f"Error deleting cluster alert: {e}")
+        return jsonify({'error': safe_error(e, 'Alert operation failed')}), 500
+
+
+@bp.route('/api/clusters/<cluster_id>/active-alerts', methods=['GET'])
+@require_auth()
+def get_active_alerts(cluster_id):
+    """List currently-firing (unresolved) alert incidents for a cluster (#501)."""
+    ok, err = check_cluster_access(cluster_id)
+    if not ok:
+        return err
+    try:
+        db = get_db()
+        cur = db.conn.cursor()
+        cols = ['id', 'alert_id', 'severity', 'message', 'target_type', 'target_name', 'metric',
+                'current_value', 'threshold', 'operator', 'triggered_at', 'last_fired_at',
+                'acked_at', 'acked_by', 'escalation_step']
+        rows = cur.execute(
+            f"SELECT {', '.join(cols)} FROM active_alerts "
+            "WHERE cluster_id = ? AND resolved_at IS NULL ORDER BY triggered_at DESC",
+            (cluster_id,)).fetchall()
+        return jsonify({'active_alerts': [dict(zip(cols, r)) for r in rows]})
+    except Exception as e:
+        logging.error(f"Error listing active alerts: {e}")
+        return jsonify({'active_alerts': [], 'error': safe_error(e, 'Alert operation failed')})
+
+
+@bp.route('/api/clusters/<cluster_id>/active-alerts/<fired_id>/ack', methods=['POST'])
+@require_auth(perms=['cluster.config'])
+def ack_active_alert(cluster_id, fired_id):
+    """Acknowledge a firing alert — stops escalation for this incident (#501)."""
+    ok, err = check_cluster_access(cluster_id)
+    if not ok:
+        return err
+    user = getattr(request, 'username', None) or (request.session.get('user', 'unknown') if hasattr(request, 'session') else 'unknown')
+    try:
+        db = get_db()
+        cur = db.conn.cursor()
+        cur.execute(
+            "UPDATE active_alerts SET acked_at=?, acked_by=? WHERE id=? AND cluster_id=? AND resolved_at IS NULL",
+            (datetime.now().isoformat(), user, fired_id, cluster_id))
+        db.conn.commit()
+        if cur.rowcount > 0:
+            return jsonify({'success': True, 'acked_by': user})
+        return jsonify({'error': 'Active alert not found or already resolved'}), 404
+    except Exception as e:
+        logging.error(f"Error acknowledging alert: {e}")
         return jsonify({'error': safe_error(e, 'Alert operation failed')}), 500
 
 
