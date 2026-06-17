@@ -3681,7 +3681,24 @@ class PegaProxDB:
                         result[pool_id] = perms
         
         return result
-    
+
+    def get_user_pool_clusters(self, username: str, groups: List[str] = None) -> List[str]:
+        """#555 — distinct cluster_ids where this user (or their groups) holds ANY pool
+        permission. Cheap: one indexed SELECT per subject on pool_permissions
+        (idx_pool_perms_cluster). Used by the cluster-list + get_user_clusters gates."""
+        cursor = self.conn.cursor()
+        subjects = [('user', username)]
+        for g in (groups or []):
+            subjects.append(('group', g))
+        out = set()
+        for stype, sid in subjects:
+            cursor.execute(
+                "SELECT DISTINCT cluster_id FROM pool_permissions WHERE subject_type = ? AND subject_id = ?",
+                (stype, sid))
+            for row in cursor.fetchall():
+                out.add(row[0])
+        return list(out)
+
     # ========================================
     # KEY ROTATION (HIPAA/ISO Compliance)
     # ========================================

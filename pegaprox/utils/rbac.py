@@ -348,7 +348,19 @@ def get_user_clusters(user: dict) -> list:
             return None  # default tenant can see all
         else:
             return []  # other tenants with no clusters assigned see nothing
-    
+
+    # #555: a pool-only user (tenant+group gave them this list) must also reach
+    # clusters where they hold pool perms. Only widen the non-None list — the None
+    # (admin / default-tenant-all) paths above already see everything.
+    try:
+        username = user.get('username', '')
+        if username:
+            pool_cids = get_db().get_user_pool_clusters(username, user.get('groups', []))
+            if pool_cids:
+                clusters = list(set(clusters) | set(pool_cids))
+    except Exception as e:
+        logging.error(f"Error adding pool clusters for {user.get('username','')}: {e}")
+
     return clusters
 
 def filter_clusters_for_user(clusters: dict, user: dict) -> dict:
@@ -616,6 +628,61 @@ def get_vm_pool_cached(cluster_id: str, vmid: int, vm_type: str = None) -> str:
     else:
         # Try both types
         return membership.get(f"{vmid}:qemu") or membership.get(f"{vmid}:lxc")
+
+def user_has_any_pool_access(user: dict, cluster_id: str) -> bool:
+    """#555 — does this user hold ANY pool permission in this cluster?
+    One cheap DB read, no membership scan. For the cluster gates."""
+    if user.get('role') == ROLE_ADMIN:
+        return True
+    username = user.get('username', '')
+    if not username:
+        return False
+    try:
+        perms = get_db().get_user_pool_permissions(cluster_id, username, user.get('groups', []))
+    except Exception as e:
+        logging.error(f"[POOL] any-access check failed for {username}@{cluster_id}: {e}")
+        return False
+    return any(p for p in perms.values())
+
+
+def get_user_pool_vmids(user: dict, cluster_id: str, permission: str = None) -> set:
+    """#555 — set of int vmids the user can reach via pool perms in this cluster.
+    Reuses the pool-membership cache + a single DB read. Empty set if none.
+    Only consulted for non-admins (list callers handle admin-all separately).
+
+    permission=None (default) = VISIBILITY: any non-empty pool grant counts. This
+    matches the pool model where 'pool.view' (not 'vm.view') is the see-the-members
+    permission — so the portal list shows a pool's VMs to anyone with a grant on it.
+    Pass a specific action perm (e.g. 'vm.start') to filter to pools where the user
+    holds that perm (or pool.admin)."""
+    username = user.get('username', '')
+    if not username:
+        return set()
+    try:
+        user_pool_perms = get_db().get_user_pool_permissions(cluster_id, username, user.get('groups', []))
+    except Exception as e:
+        logging.error(f"[POOL] vmid-list failed for {username}@{cluster_id}: {e}")
+        return set()
+    if not user_pool_perms:
+        return set()
+    if permission is None:
+        # visibility: any pool the user holds at least one (non-empty) permission on
+        ok_pools = {pid for pid, perms in user_pool_perms.items() if perms}
+    else:
+        # action-specific: pool.admin grants everything, else the perm must be present
+        ok_pools = {pid for pid, perms in user_pool_perms.items()
+                    if 'pool.admin' in perms or permission in perms}
+    if not ok_pools:
+        return set()
+    membership = get_pool_membership_cache(cluster_id)  # {'vmid:type': pool_id}
+    out = set()
+    for key, pid in membership.items():
+        if pid in ok_pools:
+            try:
+                out.add(int(key.split(':', 1)[0]))
+            except (ValueError, IndexError):
+                continue
+    return out
 
 def get_vm_acls():
     """Get VM ACLs - always reload from disk to avoid stale cache issues

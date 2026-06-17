@@ -362,6 +362,14 @@ def check_cluster_access(cluster_id):
         for vmid, acl in cluster_acls.items():
             if username in acl.get('users', []) or '*' in acl.get('users', []):
                 return True, None
+        # #555: pool fallback — any pool grant in THIS cluster lets the user reach it
+        # (per-VM gating still runs downstream via user_can_access_vm)
+        try:
+            groups = user.get('groups', []) if isinstance(user, dict) else []
+            if get_db().get_user_pool_permissions(cluster_id, username, groups):
+                return True, None
+        except Exception:
+            pass
         return False, (jsonify({'error': 'Access denied to this cluster'}), 403)
     return True, None
 

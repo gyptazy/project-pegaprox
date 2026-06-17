@@ -54,6 +54,12 @@ def get_clusters():
                 if user['username'] in acl.get('users', []) or '*' in acl.get('users', []):
                     acl_cluster_ids.add(cid)
                     break
+        # #555: also surface clusters where the user holds pool perms
+        try:
+            for cid in get_db().get_user_pool_clusters(user['username'], user.get('groups', [])):
+                acl_cluster_ids.add(cid)
+        except Exception:
+            pass
         if not acl_cluster_ids:
             return jsonify([])
 
