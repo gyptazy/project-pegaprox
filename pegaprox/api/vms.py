@@ -14,7 +14,7 @@ import shlex
 import ssl
 import socket
 from datetime import datetime, timedelta, timezone
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 
 from pegaprox.constants import *
 from pegaprox.globals import *
@@ -5559,11 +5559,12 @@ def _resolve_vm_node(mgr, vmid, vm_type='qemu'):
     return (None, None)
 
 
-def _free_local_target_vmid(mgr, tgt_vmid, src_vmid, vm_type):
+def _free_local_target_vmid(mgr, tgt_vmid, src_vmid, vm_type, target_node):
     """For a pinned local-replication target VMID: if a VM already sits on it,
-    remove it ONLY when it's a prior replica of this source (name starts with
-    `repl-<src_vmid>-`). Refuse to touch anything else so we never clobber an
-    unrelated VM. Returns (ok, error_message). #552
+    remove it ONLY when it is EXACTLY this job's prior replica — the name PegaProx
+    writes is `repl-<src>-<target_node>` (clone_label), so match that exactly rather
+    than a loose prefix. Refuse to touch anything else so we never clobber an
+    unrelated VM. Returns (ok, error_message). #552 (exact-match hardening sec-review)
     """
     try:
         node, existing = _resolve_vm_node(mgr, tgt_vmid, vm_type)
@@ -5571,7 +5572,7 @@ def _free_local_target_vmid(mgr, tgt_vmid, src_vmid, vm_type):
             return (True, '')  # free, go ahead
 
         vname = existing.get('name', '') or ''
-        if not vname.startswith(f'repl-{src_vmid}-'):
+        if vname != f'repl-{src_vmid}-{target_node}':
             return (False, (f'Target VMID {tgt_vmid} is in use by "{vname or "unknown"}" which is not a '
                             f'replica of VM {src_vmid}. Pick a free VMID or remove that VM first.'))
 
@@ -5665,7 +5666,7 @@ def _execute_local_replication(job):
         # but only if it's actually one of ours (name-matched, never a foreign VM).
         tgt_vmid = int(job.get('target_vmid') or 0)
         if tgt_vmid:
-            freed, free_err = _free_local_target_vmid(mgr, tgt_vmid, vmid, vm_type)
+            freed, free_err = _free_local_target_vmid(mgr, tgt_vmid, vmid, vm_type, target_node)
             if not freed:
                 _cleanup_snapshot(mgr, source_node, vmid, vm_type, snap_name)
                 _update_repl_status(db, job_id, 'error', free_err)
@@ -6509,7 +6510,20 @@ def get_cross_cluster_replications():
     else:
         rows = db.query('SELECT * FROM cross_cluster_replications')
 
-    return jsonify([dict(r) for r in rows])
+    # MK Jun 2026 (sec-review) — don't expose other tenants' job rows (ids, clusters,
+    # target VMIDs). Filter to clusters the caller can actually reach; admins/untenanted
+    # users get None (= everything), unchanged.
+    from pegaprox.utils.rbac import get_user_clusters
+    user = getattr(g, 'current_user', None)
+    if user is None:
+        user = db.get_user(request.session.get('user', '')) or {}
+    allowed = get_user_clusters(user)
+    out = []
+    for r in rows:
+        d = dict(r)
+        if allowed is None or d.get('source_cluster') in allowed or d.get('target_cluster') in allowed:
+            out.append(d)
+    return jsonify(out)
 
 
 @bp.route('/api/cross-cluster-replications', methods=['POST'])
@@ -6530,6 +6544,16 @@ def create_cross_cluster_replication():
     if target_cluster not in cluster_managers:
         return jsonify({'error': 'Target cluster not found'}), 404
 
+    # MK Jun 2026 (sec-review) — cluster.config is a GLOBAL perm; the tenant/ACL
+    # boundary in this codebase is check_cluster_access. The cross-cluster MIGRATION
+    # endpoint gates both sides, so replication (which can overwrite/destroy a VM on
+    # the target) must too — else a tenant-scoped operator could drive a job into a
+    # cluster they don't own.
+    for _cid in (source_cluster, target_cluster):
+        ok, err = check_cluster_access(_cid)
+        if not ok:
+            return err
+
     # NS: Mar 2026 - same-cluster snapshot replication for non-ZFS (Issue #103)
     # target_node required when source == target cluster
     target_node = data.get('target_node', '')
@@ -6543,15 +6567,34 @@ def create_cross_cluster_replication():
     # MatthieuTr #532 — per-NIC bridge mapping. PVE's target-bridge takes a
     # "src:tgt,src:tgt" list, so a multi-NIC VM keeps each card on its own
     # destination bridge (same encoding the cross-cluster migration endpoint uses).
+    # Validate every iface name (defence-in-depth) so nothing smuggles extra map
+    # entries / commas into the PVE target-bridge param.
+    def _ok_iface(n):
+        return isinstance(n, str) and 1 <= len(n) <= 32 and n[0].isalpha() and all(c.isalnum() or c in '_.-' for c in n)
     bridge_map = data.get('target_bridge_map')
-    if bridge_map and isinstance(bridge_map, dict):
+    if isinstance(bridge_map, dict) and bridge_map:
+        if len(bridge_map) > 64:
+            return jsonify({'error': 'target_bridge_map has too many entries'}), 400
+        if not all(_ok_iface(s) and _ok_iface(t) for s, t in bridge_map.items()):
+            return jsonify({'error': 'target_bridge_map contains an invalid bridge name'}), 400
         target_bridge = ','.join(f"{s}:{t}" for s, t in bridge_map.items())
     else:
-        target_bridge = data.get('target_bridge', 'vmbr0')
+        target_bridge = data.get('target_bridge', 'vmbr0') or 'vmbr0'
+        if not _ok_iface(target_bridge):
+            return jsonify({'error': 'invalid target_bridge'}), 400
 
-    # helppp #552 — optional fixed replica VMID (NULL = let PVE pick at run time)
+    # helppp #552 — optional fixed replica VMID (NULL = let PVE pick at run time).
+    # Parse defensively: garbage must 400, not crash the route with a 500.
     tv = data.get('target_vmid')
-    target_vmid = int(tv) if tv not in (None, '', 0, '0') else None
+    if tv in (None, '', 0, '0'):
+        target_vmid = None
+    else:
+        try:
+            target_vmid = int(tv)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'target_vmid must be an integer'}), 400
+        if not (100 <= target_vmid <= 999999999):
+            return jsonify({'error': 'target_vmid out of range (100–999999999)'}), 400
     delete_target = 1 if data.get('delete_target') else 0
 
     db.execute('''
@@ -6579,7 +6622,8 @@ def create_cross_cluster_replication():
 
     usr = getattr(request, 'session', {}).get('user', 'system')
     log_audit(usr, 'replication.created',
-              f"Cross-cluster replication {job_id}: VM {vmid} from {source_cluster} to {target_cluster}")
+              f"Cross-cluster replication {job_id}: VM {vmid} from {source_cluster} to {target_cluster} "
+              f"(target VMID {target_vmid or 'auto'}{', delete-target ON' if delete_target else ''})")
 
     return jsonify({'success': True, 'id': job_id})
 
@@ -6603,10 +6647,12 @@ def _delete_replica_target(job):
         node, found = _resolve_vm_node(mgr, tgt_vmid, vm_type)
         if not found:
             return (True, 'replica not present')
-        # ownership check — never delete a VM that isn't provably ours
+        # ownership check — never delete a VM that isn't provably ours.
+        # local: EXACT replica name repl-<src>-<target_node> (not a loose prefix);
+        # xcrepl: the job-specific replica tag.
         if is_local:
             vname = found.get('name', '') or ''
-            owned = vname.startswith(f'repl-{src_vmid}-')
+            owned = (vname == f"repl-{src_vmid}-{job.get('target_node', '')}")
         else:
             owned = _is_replica_of_job(mgr, node, tgt_vmid, vm_type, job_id)
         if not owned:
@@ -6626,7 +6672,11 @@ def _delete_replica_target(job):
             return (False, f'delete failed: {dr.text[:160]}')
         dt = dr.json().get('data')
         if dt:
-            ok, detail = _wait_for_task(mgr, dt, timeout=600)
+            # bounded wait — this teardown runs inline in the request greenlet, so
+            # don't let one delete pin a worker for 10 min (sec-review). A replica
+            # qmdestroy is quick; if it ever exceeds this, PVE still finishes it and
+            # a retry sees 'replica not present'.
+            ok, detail = _wait_for_task(mgr, dt, timeout=180)
             if not ok:
                 return (False, f'delete task failed: {detail}')
         return (True, f'VM {tgt_vmid} removed')
@@ -6660,14 +6710,38 @@ def delete_cross_cluster_replication(job_id):
         return jsonify({'error': 'Replication job not found'}), 404
     job = dict(existing)
 
+    # MK Jun 2026 (sec-review) — per-cluster access gate (same boundary as create/run).
+    # Without it, a tenant-scoped cluster.config holder could destroy another tenant's
+    # replica VM via delete_target, or tamper with their job config.
+    for _cid in (job.get('source_cluster'), job.get('target_cluster')):
+        if _cid:
+            ok, err = check_cluster_access(_cid)
+            if not ok:
+                return err
+
+    want_teardown = _wants_delete_target(job)
+
+    # Don't race an in-flight run: tearing the replica down mid-run just lets the run
+    # re-create it (we hit exactly this during testing). Same _claim_job set the run
+    # + scheduler use.
+    if want_teardown:
+        from pegaprox.background.cross_cluster_replication import is_job_inflight
+        if is_job_inflight(job_id):
+            return jsonify({'error': 'Replication job is running',
+                            'detail': 'Wait for the current run to finish before deleting with target teardown.'}), 409
+
     target_detail = ''
     target_deleted = False
-    if _wants_delete_target(job):
+    if want_teardown:
         ok, detail = _delete_replica_target(job)
-        target_deleted = ok
-        target_detail = f' (replica: {detail})'
         if not ok:
-            logging.warning(f"[XCREPL] Job {job_id}: replica teardown reported: {detail}")
+            # teardown genuinely failed — keep the job row so the operator keeps the
+            # handle and can retry (or delete without teardown to just drop the job).
+            logging.warning(f"[XCREPL] Job {job_id}: replica teardown failed, keeping job: {detail}")
+            return jsonify({'error': 'Replica teardown failed — replication job kept',
+                            'detail': detail}), 409
+        target_deleted = True
+        target_detail = f' (replica: {detail})'
 
     db.execute('DELETE FROM cross_cluster_replications WHERE id = ?', (job_id,))
 
@@ -6685,6 +6759,15 @@ def run_cross_cluster_replication(job_id):
     job = db.query_one('SELECT * FROM cross_cluster_replications WHERE id = ?', (job_id,))
     if not job:
         return jsonify({'error': 'Replication job not found'}), 404
+
+    # MK Jun 2026 (sec-review) — gate per-cluster access before kicking off a run that
+    # migrates into / overwrites the replica on these clusters (same boundary as create).
+    _job = dict(job)
+    for _cid in (_job.get('source_cluster'), _job.get('target_cluster')):
+        if _cid:
+            ok, err = check_cluster_access(_cid)
+            if not ok:
+                return err
 
     # MK May 2026 (#455 @DarmokNoob) — block duplicate triggers while a previous
     # run is still in-flight. The scheduler uses the same _claim_job() guard.
