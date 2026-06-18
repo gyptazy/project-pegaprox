@@ -433,7 +433,7 @@
                 // Guest agent info
                 if (vm.status === 'running') {
                     doFetch(`${API_URL}/clusters/${clusterId}/vms/${vm.node}/${vm.type}/${vm.vmid}/guest-info`)
-                        .then(data => { if (data && data.agent_running) setGuestInfo(data); });
+                        .then(data => { if (data && (data.agent_running || data.is_lxc)) setGuestInfo(data); });  // #560: LXC has no agent but still reports IP/host
                 }
             }, [vm.vmid, vm.status, clusterId]);
 
@@ -561,10 +561,21 @@
                             </div>
                         )}
 
-                        {/* Guest Agent Info */}
-                        {isQemu && vm.status === 'running' && guestInfo && (
+                        {/* Guest Agent Info (QEMU) / live container info (LXC, #560) */}
+                        {vm.status === 'running' && guestInfo && (
                             <div className="px-6 pb-2">
                                 <div className="bg-proxmox-dark rounded-lg p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    {guestInfo.ip_addresses && guestInfo.ip_addresses.length > 0 && (
+                                        <div className="flex items-center gap-3 min-w-0">
+                                            <div className="p-2 rounded-lg bg-cyan-500/10">
+                                                <Icons.Globe className="w-4 h-4 text-cyan-400" />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <div className="text-xs text-gray-500">{t('ipAddress') || 'IP Address'}</div>
+                                                <div className="text-sm font-semibold text-white font-mono truncate" title={guestInfo.ip_addresses.join(', ')}>{guestInfo.ip_addresses.join(', ')}</div>
+                                            </div>
+                                        </div>
+                                    )}
                                     {guestInfo.hostname && (
                                         <div className="flex items-center gap-3">
                                             <div className="p-2 rounded-lg bg-cyan-500/10">
@@ -600,7 +611,7 @@
                                     )}
                                     <div className="flex items-center gap-1.5 md:col-span-3 pt-2 border-t border-gray-700/30">
                                         <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-                                        <span className="text-xs text-cyan-400/70">QEMU Guest Agent</span>
+                                        <span className="text-xs text-cyan-400/70">{isQemu ? 'QEMU Guest Agent' : 'Live container info (Proxmox)'}</span>
                                     </div>
                                 </div>
                             </div>

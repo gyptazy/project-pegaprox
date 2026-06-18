@@ -3855,6 +3855,37 @@ def get_vm_guest_info_api(cluster_id, node, vm_type, vmid):
     if cluster_id not in cluster_managers:
         return jsonify({'error': 'Cluster not found'}), 404
 
+    # MK Jun 2026 (#560 @j0c00) — LXCs have no guest agent, but PVE still exposes the
+    # container's live IPs via /lxc/<vmid>/interfaces (_fetch_lxc_ips, #300) and the OS
+    # type + hostname via config. Surface them so the detail view shows OS + IP like the
+    # PVE UI does, instead of a bare "LXC Container" with no address.
+    if vm_type == 'lxc':
+        res = {'agent_running': False, 'is_lxc': True, 'hostname': None,
+               'os_pretty_name': None, 'os_id': None, 'os_version': None,
+               'os_kernel': None, 'ip_addresses': [], 'interfaces': []}
+        try:
+            mgr = cluster_managers[cluster_id]
+            seen = set(); clean = []
+            for ip in (mgr._fetch_lxc_ips(node, vmid) or []):
+                if not ip or ip in seen:
+                    continue
+                seen.add(ip)
+                # skip loopback / link-local / the docker bridge noise
+                if ip.startswith(('127.', '::1', '169.254.', 'fe80', '172.17.')):
+                    continue
+                clean.append(ip)
+            res['ip_addresses'] = clean
+            cfg = mgr.get_vm_config(node, vmid, 'lxc')
+            if cfg.get('success'):
+                gen = cfg['config'].get('general', {}) or {}
+                res['hostname'] = gen.get('hostname')
+                _ost = gen.get('ostype')
+                if _ost:
+                    res['os_pretty_name'] = str(_ost).capitalize()
+        except Exception as e:
+            logging.debug(f"[lxc-info] {vm_type}/{vmid}: {e}")
+        return jsonify(res)
+
     if vm_type != 'qemu':
         return jsonify({'agent_running': False}), 200
 
