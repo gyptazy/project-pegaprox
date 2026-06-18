@@ -1597,7 +1597,11 @@
             const cols = (columns && columns.length) ? columns : (rows[0] ? Object.keys(rows[0]).map(k => ({key: k, label: k})) : []);
             const escape = (v) => {
                 if (v === null || v === undefined) return '';
-                const s = String(v);
+                let s = String(v);
+                // NS: CWE-1236 — neutralise CSV formula injection. A cell starting with
+                // = + - @ (or tab/CR) is run as a formula by Excel/Sheets; prefix with a
+                // single quote so spreadsheets render it as plain text.
+                if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
                 return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
             };
             const head = cols.map(c => escape(c.label || c.key)).join(',');

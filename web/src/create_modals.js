@@ -3031,8 +3031,8 @@
                                                 <div className="flex items-center gap-3">
                                                     <Icons.Globe className="w-5 h-5 text-gray-400" />
                                                     <div>
-                                                        <p className="text-sm font-medium text-white">{t('languagePreference')}</p>
-                                                        <p className="text-xs text-gray-500">{t('languagePreferenceDesc')}</p>
+                                                        <p className="text-sm font-medium text-white">{t('languagePreference') || 'Language'}</p>
+                                                        <p className="text-xs text-gray-500">{t('languagePreferenceDesc') || 'Interface language for your account'}</p>
                                                     </div>
                                                 </div>
                                                 <LanguageSwitcher />
