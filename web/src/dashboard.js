@@ -16436,15 +16436,8 @@
                                         {/* Reports Tab - NS Jan 2026 - Now cluster-based */}
                                         {activeTab === 'reports' && (
                                             <div className="space-y-6">
-                                                <div className="flex justify-between items-center">
-                                                    <h2 className="text-lg font-semibold flex items-center gap-2">
-                                                        <Icons.BarChart />
-                                                        {t('reportsAnalytics') || 'Reports & Analytics'}: {selectedCluster?.name}
-                                                    </h2>
-                                                </div>
-
-                                                {/* Sub-tab navigation */}
-                                                <div className="flex gap-2 border-b border-proxmox-border pb-2">
+                                                {/* LW: use the same corp tab-strip as Automation/the other sections (was a one-off blue underline) */}
+                                                <div className={isCorporate ? 'corp-tab-strip' : 'flex gap-2 border-b border-proxmox-border pb-2'}>
                                                     {[
                                                         { id: 'summary', label: t('summary') || 'Summary', icon: Icons.BarChart },
                                                         { id: 'cve', label: t('cveScanner') || 'CVE Scanner', icon: Icons.Shield },
@@ -16458,11 +16451,7 @@
                                                             key={tab.id}
                                                             onClick={() => setReportSubTab(tab.id)}
                                                             className={isCorporate
-                                                                ? `px-4 py-1.5 text-[13px] border-b-2 flex items-center gap-1.5 ${
-                                                                    reportSubTab === tab.id
-                                                                        ? 'border-blue-500 text-white'
-                                                                        : 'border-transparent text-gray-400 hover:text-white'
-                                                                  }`
+                                                                ? `flex items-center gap-1.5 ${reportSubTab === tab.id ? 'active' : ''}`
                                                                 : `px-4 py-1.5 rounded-lg text-sm flex items-center gap-1.5 ${
                                                                     reportSubTab === tab.id
                                                                         ? 'bg-proxmox-orange text-white'
@@ -16470,7 +16459,7 @@
                                                                 }`
                                                             }
                                                         >
-                                                            <tab.icon className="w-4 h-4" />
+                                                            <tab.icon className={isCorporate ? 'w-3 h-3' : 'w-4 h-4'} />
                                                             {tab.label}
                                                         </button>
                                                     ))}
