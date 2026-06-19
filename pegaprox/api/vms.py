@@ -6803,8 +6803,10 @@ def _wants_delete_target(job):
     Per-request override (query ?delete_target=1 or JSON body) wins; otherwise
     fall back to the flag stored on the job."""
     raw = request.args.get('delete_target')
-    if raw is None and request.is_json:
-        body = request.json or {}
+    if raw is None:
+        # #563 — silent parse: a DELETE with an empty body but a JSON content-type
+        # (what the fetch wrapper sends) used to make request.json throw a 400.
+        body = request.get_json(silent=True) or {}
         if isinstance(body, dict) and 'delete_target' in body:
             raw = body.get('delete_target')
     if raw is None:
@@ -6828,7 +6830,10 @@ def delete_cross_cluster_replication(job_id):
     # Without it, a tenant-scoped cluster.config holder could destroy another tenant's
     # replica VM via delete_target, or tamper with their job config.
     for _cid in (job.get('source_cluster'), job.get('target_cluster')):
-        if _cid:
+        # #563 — a cluster that no longer exists can't be tenant-owned anymore and its
+        # replica is gone with it, so its absence must not block cleanup of the orphaned
+        # job. Still gate clusters that DO exist (the BOLA boundary the comment below means).
+        if _cid and _cid in cluster_managers:
             ok, err = check_cluster_access(_cid)
             if not ok:
                 return err
@@ -6847,15 +6852,23 @@ def delete_cross_cluster_replication(job_id):
     target_detail = ''
     target_deleted = False
     if want_teardown:
-        ok, detail = _delete_replica_target(job)
-        if not ok:
-            # teardown genuinely failed — keep the job row so the operator keeps the
-            # handle and can retry (or delete without teardown to just drop the job).
-            logging.warning(f"[XCREPL] Job {job_id}: replica teardown failed, keeping job: {detail}")
-            return jsonify({'error': 'Replica teardown failed — replication job kept',
-                            'detail': detail}), 409
-        target_deleted = True
-        target_detail = f' (replica: {detail})'
+        _tgt = job.get('target_cluster')
+        if _tgt and _tgt not in cluster_managers:
+            # #563 — target cluster was removed; the replica died with it, there's
+            # nothing left to tear down. Drop the job rather than wedging on a teardown
+            # that can never succeed.
+            logging.info(f"[XCREPL] Job {job_id}: target cluster {_tgt} gone, dropping job without teardown")
+            target_detail = ' (target cluster removed — replica gone with it)'
+        else:
+            ok, detail = _delete_replica_target(job)
+            if not ok:
+                # teardown genuinely failed — keep the job row so the operator keeps the
+                # handle and can retry (or delete without teardown to just drop the job).
+                logging.warning(f"[XCREPL] Job {job_id}: replica teardown failed, keeping job: {detail}")
+                return jsonify({'error': 'Replica teardown failed — replication job kept',
+                                'detail': detail}), 409
+            target_deleted = True
+            target_detail = f' (replica: {detail})'
 
     db.execute('DELETE FROM cross_cluster_replications WHERE id = ?', (job_id,))
 
