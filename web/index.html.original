@@ -1093,7 +1093,11 @@
             --color-error: #f54f47;
             --color-info: #49afd9;
             --corp-accent: #49afd9;
+            --corp-accent-hover: #6cc6e8;
             --corp-selection: #324f61;
+            --corp-radius-sm: 4px;
+            --corp-radius-md: 6px;
+            --corp-radius-lg: 8px;
             --corp-text-secondary: #adbbc4;
             --corp-text-muted: #728b9a;
             --corp-divider: #37474f;
@@ -1109,10 +1113,10 @@
             --corp-header-bg: #1a2730;
             --corp-bar-track: #1a2e38;
             /* MK: Mar 2026 - elevation tokens */
-            --corp-shadow-sm: 0 1px 2px rgba(0,0,0,0.15), 0 1px 3px rgba(0,0,0,0.1);
-            --corp-shadow-md: 0 2px 6px rgba(0,0,0,0.2), 0 1px 3px rgba(0,0,0,0.1);
-            --corp-shadow-lg: 0 4px 12px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.15);
-            --corp-shadow-xl: 0 8px 24px rgba(0,0,0,0.4), 0 2px 8px rgba(0,0,0,0.2);
+            --corp-shadow-sm: 0 1px 2px rgba(6,12,18,0.15), 0 1px 3px rgba(6,12,18,0.1);
+            --corp-shadow-md: 0 3px 8px rgba(6,12,18,0.2), 0 1px 3px rgba(6,12,18,0.1);
+            --corp-shadow-lg: 0 6px 16px rgba(6,12,18,0.3), 0 2px 4px rgba(6,12,18,0.15);
+            --corp-shadow-xl: 0 8px 24px rgba(6,12,18,0.4), 0 2px 8px rgba(6,12,18,0.2);
             /* NS 2026-06-05 (UI polish): semantic metric + threshold colors so the
                corporate detail views stop hardcoding hex inline (theme-aware now). */
             --corp-metric-cpu: #49afd9;
@@ -1143,6 +1147,9 @@
             --corp-accent: #0072a3;
             --corp-accent-hover: #005a85;
             --corp-selection: #d6ebf6;
+            --corp-radius-sm: 4px;
+            --corp-radius-md: 6px;
+            --corp-radius-lg: 8px;
             --corp-text:           #1c2733;
             --corp-text-secondary: #44525e;
             --corp-text-muted:     #6a7782;
@@ -1181,7 +1188,7 @@
         body[data-corp-theme="light"] .corp-datagrid td { border-color: #ecf1f4 !important; color: #1c2733 !important; }
         body[data-corp-theme="light"] .corp-datagrid tr:hover td { background: rgba(0,114,163,0.04) !important; }
         body[data-corp-theme="light"] .corp-datagrid tr.corp-row-selected td { background: rgba(0,114,163,0.10) !important; }
-        body[data-corp-theme="light"] .corp-datagrid tr.corp-row-selected td:first-child { border-left-color: #0072a3 !important; }
+        body[data-corp-theme="light"] .corp-datagrid tr.corp-row-selected td:first-child { box-shadow: inset 3px 0 0 #0072a3 !important; }
         /* MK May 2026 (#296): the dark-mode `.corp-datagrid td` rule sits later
            in the cascade with equal specificity, so without !important the
            inventory overview rows ended up #e9ecef on white = invisible. */
@@ -1357,7 +1364,7 @@
         body[data-corp-theme="light"] .corp-card { background: #fff !important; border-color: #cfd8dc !important; }
         body[data-corp-theme="light"] .corp-card-header { color: #555 !important; background: #f0f2f5 !important; }
         /* badges */
-        body[data-corp-theme="light"] .corp-badge { border-color: #cfd8dc !important; }
+        body[data-corp-theme="light"] .corp-badge { border-color: transparent !important; }
         body[data-corp-theme="light"] .corp-badge-stopped { color: #888 !important; }
         /* navigation & subnav */
         body[data-corp-theme="light"] .corp-subnav { border-color: #ddd !important; }
@@ -1729,7 +1736,7 @@
 
         /* Dense corporate tables */
         body[data-layout="corporate"] table td,
-        body[data-layout="corporate"] table th { padding: 4px 8px !important; font-size: 13px !important; }
+        body[data-layout="corporate"] table th { padding: 6px 12px !important; font-size: 13px !important; }
 
         /* Kill hover scale effects */
         body[data-layout="corporate"] .hover\:scale-105:hover,
@@ -1800,14 +1807,14 @@
             letter-spacing: 0.08em; padding: 12px 0 8px; border-bottom: 2px solid var(--corp-border-subtle, #283844); margin-bottom: 8px; }
 
         /* Corporate action dropdown */
-        .corp-dropdown { background: var(--color-card, #22343c); border: 1px solid var(--color-border, #485764); box-shadow: var(--corp-shadow-lg, 0 4px 12px rgba(0,0,0,0.3));
+        .corp-dropdown { background: var(--color-card, #22343c); border: 1px solid var(--color-border, #485764); border-radius: var(--corp-radius-md); box-shadow: var(--corp-shadow-lg, 0 4px 12px rgba(0,0,0,0.3));
             animation: corp-dropdown-in 0.12s ease-out; transform-origin: top; }
         .corp-dropdown button:hover { background: var(--color-hover, #29414e); }
         /* NS 2026-06-05 (UI polish): subtle fade/scale-in so menus don't pop abruptly */
         @keyframes corp-dropdown-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 
         /* LW: Mar 2026 - Right-click context menu for sidebar tree */
-        .corp-context-menu { background: var(--corp-surface-3); border: 1px solid var(--corp-border-medium); box-shadow: var(--corp-shadow-lg, 0 4px 12px rgba(0,0,0,0.3)); min-width: 200px; max-width: 280px; padding: 4px 0; font-size: 13px; z-index: 999; }
+        .corp-context-menu { background: var(--corp-surface-3); border: 1px solid var(--corp-border-medium); border-radius: var(--corp-radius-md); box-shadow: var(--corp-shadow-lg, 0 4px 12px rgba(0,0,0,0.3)); min-width: 200px; max-width: 280px; padding: 4px 0; font-size: 13px; z-index: 999; }
         .corp-ctx-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 12px; color: var(--corp-text-secondary); background: none; border: none; cursor: pointer; text-align: left; white-space: nowrap; font-size: 13px; font-family: inherit; }
         .corp-ctx-item:hover:not(:disabled) { background: var(--color-hover); color: var(--color-text); }
         .corp-ctx-item:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -1820,11 +1827,12 @@
         .corp-selected { background: rgba(73,175,217,0.10) !important; color: #fff !important; border-left: 2px solid #49afd9; }
 
         /* Corporate status badges */
-        .corp-badge { padding: 1px 6px; font-size: 11px; font-weight: 500; border-radius: 3px; }
-        .corp-badge-running { background: rgba(96, 181, 21, 0.15); color: #60b515; border: 1px solid rgba(96, 181, 21, 0.3); }
-        .corp-badge-stopped { background: rgba(114, 139, 154, 0.15); color: #728b9a; border: 1px solid rgba(114, 139, 154, 0.3); }
-        .corp-badge-ha { background: rgba(73, 175, 217, 0.15); color: #49afd9; border: 1px solid rgba(73, 175, 217, 0.3); }
-        .corp-badge-locked { background: rgba(239, 192, 6, 0.15); color: #efc006; border: 1px solid rgba(239, 192, 6, 0.3); }
+        .corp-badge { padding: 1px 6px; font-size: 11px; font-weight: 500; border-radius: 3px; border: 1px solid transparent; }
+        .corp-badge::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 5px; vertical-align: middle; }
+        .corp-badge-running { background: rgba(96, 181, 21, 0.12); color: #60b515; }
+        .corp-badge-stopped { background: rgba(114, 139, 154, 0.12); color: #728b9a; }
+        .corp-badge-ha { background: rgba(73, 175, 217, 0.12); color: #49afd9; }
+        .corp-badge-locked { background: rgba(239, 192, 6, 0.12); color: #efc006; }
 
         /* LW: Feb 2026 - Corporate Node Detail sub-navigation */
         .corp-subnav { min-width: 200px; width: auto; border-right: 1px solid var(--corp-divider, #37474f); flex-shrink: 0; }
@@ -1875,7 +1883,7 @@
             min-height: 60px;
         }
         [data-corp-theme="light"] .corp-vm-modal-header {
-            background: linear-gradient(180deg, #ffffff 0%, #f6f8fa 100%);
+            background: #f6f8fa;
             border-bottom-color: #c0ccd4;
         }
         .corp-vm-modal-header-left {
@@ -2469,11 +2477,12 @@
             border: 1px solid; border-radius: 2px;
         }
 
-        .corp-capacity-bar { height: 7px; background: var(--corp-bar-track); overflow: hidden; border-radius: 2px; }
-        .corp-capacity-bar > div { height: 100%; transition: width 0.3s ease; border-radius: 2px; }
-        .corp-badge-online { background: rgba(96, 181, 21, 0.15); color: #60b515; border: 1px solid rgba(96, 181, 21, 0.3); }
-        .corp-badge-offline { background: rgba(245, 79, 71, 0.15); color: #f54f47; border: 1px solid rgba(245, 79, 71, 0.3); }
-        .corp-badge-maintenance { background: rgba(239, 192, 6, 0.15); color: #efc006; border: 1px solid rgba(239, 192, 6, 0.3); }
+        /* LW: pill + a bit of air under the value, matches the storage bars */
+        .corp-capacity-bar { height: 6px; margin-top: 3px; background: var(--corp-bar-track); overflow: hidden; border-radius: 999px; }
+        .corp-capacity-bar > div { height: 100%; transition: width 0.3s ease; border-radius: 999px; }
+        .corp-badge-online { background: rgba(96, 181, 21, 0.12); color: #60b515; }
+        .corp-badge-offline { background: rgba(245, 79, 71, 0.12); color: #f54f47; }
+        .corp-badge-maintenance { background: rgba(239, 192, 6, 0.12); color: #efc006; }
 
         /* LW: Feb 2026 - Corporate data-grid (dense table) */
         body[data-layout="corporate"] .corp-datagrid { border-collapse: collapse; width: 100%; }
@@ -2482,8 +2491,8 @@
         body[data-layout="corporate"] .corp-datagrid th:hover { color: #c8d8e4; cursor: pointer; }
         body[data-layout="corporate"] .corp-datagrid td { padding: 6px 12px; font-size: 13px; border-bottom: 1px solid var(--corp-border-subtle, #283844); color: #e9ecef; }
         body[data-layout="corporate"] .corp-datagrid tr:hover td { background: rgba(73,175,217,0.04); transition: background 0.15s ease; }
-        body[data-layout="corporate"] .corp-datagrid tr.corp-row-selected td { background: rgba(73,175,217,0.10); }
-        body[data-layout="corporate"] .corp-datagrid tr.corp-row-selected td:first-child { border-left: 2px solid #49afd9; }
+        body[data-layout="corporate"] .corp-datagrid tr.corp-row-selected td { background: rgba(73,175,217,0.16); }
+        body[data-layout="corporate"] .corp-datagrid tr.corp-row-selected td:first-child { box-shadow: inset 3px 0 0 var(--corp-accent); }
         body[data-layout="corporate"] .corp-datagrid .sort-indicator { color: #49afd9; }
 
         /* LW: Feb 2026 - Corporate modal overrides (Clarity flat inputs) */
@@ -2510,22 +2519,21 @@
             background: var(--corp-surface-0) !important;
             border-color: var(--corp-border-medium) !important;
         }
-        /* Clarity-style underline inputs inside modals */
+        /* bordered-box inputs inside modals — matches the modal-body fields */
         body[data-layout="corporate"] .fixed.inset-0 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
         body[data-layout="corporate"] .fixed.inset-0 select,
         body[data-layout="corporate"] .fixed.inset-0 textarea {
-            border: none !important;
-            border-bottom: 1px solid var(--corp-border-medium) !important;
-            background: transparent !important;
-            border-radius: 0 !important;
-            padding: 6px 2px !important;
+            border: 1px solid var(--corp-border-medium) !important;
+            border-radius: 3px !important;
+            background: var(--corp-surface-2) !important;
+            padding: 6px 8px !important;
             color: var(--color-text) !important;
         }
         body[data-layout="corporate"] .fixed.inset-0 input:focus,
         body[data-layout="corporate"] .fixed.inset-0 select:focus,
         body[data-layout="corporate"] .fixed.inset-0 textarea:focus {
-            border-bottom-color: var(--corp-accent) !important;
-            box-shadow: 0 1px 0 0 var(--corp-accent) !important;
+            border-color: var(--corp-accent) !important;
+            box-shadow: 0 0 0 3px rgba(73,175,217,0.15) !important;
             outline: none !important;
         }
         /* primary action buttons in modals */
@@ -2649,14 +2657,14 @@
 
         /* NS: Status bar - bottom of page */
         .corp-status-bar {
-            position: fixed; bottom: 0; left: 0; right: 0; height: 24px; z-index: 40;
+            position: fixed; bottom: 0; left: 0; right: 0; height: 26px; z-index: 40;
             background: var(--corp-surface-0, #0e161b); border-top: 1px solid var(--corp-border-medium, #344955);
             display: flex; align-items: center; padding: 0 12px;
             font-size: 11px; color: #728b9a;
         }
         .corp-status-bar-item {
             display: inline-flex; align-items: center; gap: 4px;
-            padding: 0 8px; border-right: 1px solid #37474f; height: 100%;
+            padding: 0 8px; border-right: 1px solid var(--corp-divider); height: 100%;
         }
         .corp-status-bar-item:last-child { border-right: none; }
 
@@ -2679,8 +2687,8 @@
         body[data-layout="corporate"] .bg-proxmox-card { box-shadow: 0 1px 2px rgba(0,0,0,0.12); }
 
         /* LW: Mar 2026 - Card component (reusable content block) */
-        .corp-card { background: var(--corp-surface-3, #243542); border: 1px solid var(--corp-border-medium, #344955); border-radius: 3px; }
-        .corp-card-header { padding: 8px 12px; background: var(--corp-surface-0, #0e161b); border-bottom: 1px solid var(--corp-border-medium, #344955);
+        .corp-card { background: var(--corp-surface-3, #243542); border: 1px solid var(--corp-border-medium, #344955); border-radius: var(--corp-radius-md); }
+        .corp-card-header { padding: 8px 12px; background: var(--corp-surface-2, #1a2730); border-bottom: 1px solid var(--corp-border-medium, #344955);
             font-size: 12px; font-weight: 600; color: #adbbc4; text-transform: uppercase; letter-spacing: 0.05em; }
         .corp-card-body { padding: 12px; }
 
@@ -2689,7 +2697,7 @@
         .corp-toolbar-group button { border-radius: 0 !important; border: none !important; }
 
         /* Status bar item strong text */
-        .corp-status-bar-item strong { color: #e9ecef; font-weight: 500; }
+        .corp-status-bar-item strong { color: var(--corp-text-secondary); font-weight: 500; }
 
         /* LW: Mar 2026 - Sidebar quick-filter */
         .corp-sidebar-search { width: 100%; padding: 5px 8px 5px 28px; font-size: 12px; background: var(--corp-surface-0, #0e161b); border: 1px solid var(--corp-border-subtle, #283844);
@@ -2699,7 +2707,7 @@
 
         /* NS: Mar 2026 - Event feed mini-panel above status bar */
         .corp-event-log {
-            position: fixed; bottom: 24px; left: 0; right: 0; z-index: 39;
+            position: fixed; bottom: 26px; left: 0; right: 0; z-index: 39;
             background: var(--corp-surface-1, #111a21); border-top: 1px solid var(--corp-border-medium, #344955);
             max-height: 200px; overflow-y: auto; scrollbar-width: thin;
         }
@@ -2746,8 +2754,10 @@
 
         /* Phase 9: cluster overview summary cards - NS */
         .corp-overview-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
-        .corp-overview-card { background: var(--corp-surface-3); border: 1px solid var(--corp-border-medium); border-radius: 3px; padding: 12px 16px; display: flex; align-items: center; gap: 14px; }
+        .corp-overview-card { background: linear-gradient(135deg, color-mix(in srgb, var(--corp-accent) 12%, var(--corp-surface-3)), var(--corp-surface-3) 75%); border: 1px solid color-mix(in srgb, var(--corp-accent) 18%, var(--corp-border-medium)); border-radius: var(--corp-radius-lg); padding: 12px 16px; display: flex; align-items: center; gap: 14px; }
         .corp-overview-card:hover { border-color: var(--corp-border-strong); }
+        /* LW: accent-tinted icon chip for the overview cards */
+        .corp-stat-icon { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: rgba(73,175,217,0.12); border-radius: var(--corp-radius-md); color: var(--corp-accent); flex-shrink: 0; }
         .corp-donut-track { stroke: #1b2a32; }
         .corp-donut-fill { transition: stroke-dashoffset 0.5s ease; }
         .corp-overview-label { font-size: 11px; color: #728b9a; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 2px; }
@@ -2763,12 +2773,12 @@
 
         /* Phase 11: sidebar hover tooltip popover */
         .corp-hover-tip { position: fixed; z-index: 100; background: var(--corp-surface-3); border: 1px solid var(--corp-border-strong);
-            box-shadow: var(--corp-shadow-lg, 0 4px 12px rgba(0,0,0,0.3)); border-radius: 3px; padding: 8px 12px; max-width: 260px; font-size: 12px; pointer-events: none; }
+            box-shadow: var(--corp-shadow-lg, 0 4px 12px rgba(0,0,0,0.3)); border-radius: var(--corp-radius-md); padding: 8px 12px; max-width: 260px; font-size: 12px; pointer-events: none; }
         .corp-hover-tip-header { font-weight: 600; color: #e9ecef; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
         .corp-hover-tip-row { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; }
         .corp-hover-tip-label { color: #728b9a; }
         .corp-hover-tip-value { color: #adbbc4; font-weight: 500; }
-        .corp-hover-tip-bar { height: 3px; background: #1b2a32; border-radius: 1px; margin-top: 2px; }
+        .corp-hover-tip-bar { height: 6px; background: var(--corp-bar-track); border-radius: 999px; margin-top: 2px; }
         .corp-hover-tip-bar > div { height: 100%; border-radius: 1px; }
 
         /* LW: Apr 2026 - fix gray-on-gray in advanced sections (#303) */
@@ -2789,17 +2799,17 @@
         .corp-modal-footer { background: var(--corp-surface-1); border-top: 1px solid var(--corp-border-medium);
             padding: 8px 16px; display: flex; justify-content: flex-end; gap: 8px; }
 
-        /* Clarity-style underline inputs in corporate modals */
+        /* bordered-box inputs in corporate modals */
         body[data-layout="corporate"] .fixed.inset-0 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not(.corp-sidebar-search) {
-            border: none !important; border-bottom: 1px solid var(--corp-border-medium) !important;
-            background: transparent !important; border-radius: 0 !important; padding: 6px 2px !important;
+            border: 1px solid var(--corp-border-medium) !important; border-radius: 3px !important;
+            background: var(--corp-surface-2) !important; padding: 6px 8px !important;
         }
         body[data-layout="corporate"] .fixed.inset-0 input:focus:not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
-            border-bottom-color: #49afd9 !important; box-shadow: 0 1px 0 0 #49afd9 !important;
+            border-color: #49afd9 !important; box-shadow: 0 0 0 3px rgba(73,175,217,0.15) !important;
         }
         body[data-layout="corporate"] .fixed.inset-0 select {
-            border: 1px solid var(--corp-border-medium) !important; background: var(--corp-surface-1) !important;
-            border-radius: 3px !important; padding: 5px 8px !important;
+            border: 1px solid var(--corp-border-medium) !important; background: var(--corp-surface-2) !important;
+            border-radius: 3px !important; padding: 6px 8px !important;
         }
 
         /* Phase 13: icon-only action buttons - LW */
@@ -2870,11 +2880,11 @@
         .corp-storage-card:last-child { border-bottom: none; }
         .corp-storage-card:hover { background: rgba(73,175,217,0.04); }
         .corp-storage-type-badge { font-size: 10px; padding: 1px 6px; border-radius: 2px; text-transform: uppercase; letter-spacing: 0.03em; }
-        .corp-storage-cap-bar { width: 80px; height: 3px; background: #1b2a32; border-radius: 1px; flex-shrink: 0; }
+        .corp-storage-cap-bar { width: 80px; height: 6px; background: var(--corp-bar-track); border-radius: 999px; flex-shrink: 0; }
 
         /* NS: Mar 2026 - card elevation + hover lift */
-        body[data-layout="corporate"] .corp-card { box-shadow: var(--corp-shadow-sm); transition: box-shadow 0.15s ease, transform 0.15s ease; }
-        body[data-layout="corporate"] .corp-card:hover { box-shadow: var(--corp-shadow-md); transform: translateY(-1px); }
+        body[data-layout="corporate"] .corp-card { box-shadow: var(--corp-shadow-sm); transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease; }
+        body[data-layout="corporate"] .corp-card:hover { box-shadow: var(--corp-shadow-md); transform: translateY(-2px); border-color: var(--corp-border-strong); }
 
         /* input focus glow */
         body[data-layout="corporate"] input:focus,
@@ -2896,20 +2906,20 @@
         /* button press feedback */
         body[data-layout="corporate"] button:active:not(:disabled) { transform: scale(0.97); }
 
-        /* overview card left-accent stripe redesign */
-        .corp-overview-card { border: none; border-left: 3px solid transparent; transition: border-color 0.15s ease, box-shadow 0.15s ease; box-shadow: var(--corp-shadow-sm); }
-        .corp-overview-card:hover { border-left-color: var(--corp-accent, #49afd9); box-shadow: var(--corp-shadow-md); }
+        /* overview card left-accent stripe — inset so it stacks with the tinted border above */
+        .corp-overview-card { transition: border-color 0.15s ease, box-shadow 0.15s ease; box-shadow: var(--corp-shadow-sm); }
+        .corp-overview-card:hover { box-shadow: inset 3px 0 0 var(--corp-accent, #49afd9), var(--corp-shadow-md); }
 
-        /* datagrid row left indicator */
-        body[data-layout="corporate"] .corp-datagrid td:first-child { border-left: 2px solid transparent; }
-        body[data-layout="corporate"] .corp-datagrid tr:hover td:first-child { border-left-color: rgba(73,175,217,0.4); }
-        body[data-layout="corporate"] .corp-datagrid tr.corp-row-selected td:first-child { border-left-color: #49afd9; }
+        /* datagrid row left indicator — inset shadow so the cell text doesn't shift */
+        body[data-layout="corporate"] .corp-datagrid tr:hover td:first-child { box-shadow: inset 3px 0 0 rgba(73,175,217,0.4); }
+        body[data-layout="corporate"] .corp-datagrid tr.corp-row-selected td:first-child { box-shadow: inset 3px 0 0 var(--corp-accent); }
 
-        /* LW: typography hierarchy polish */
+        /* LW: typography hierarchy polish — reserve 10px/700/tracked uppercase for the
+           section header only; datagrid th + card-header step down to 11px/600 */
         .corp-section-header { font-size: 10px !important; font-weight: 700 !important; letter-spacing: 0.1em !important; }
         .corp-overview-value { font-size: 20px !important; font-weight: 700 !important; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-        body[data-layout="corporate"] .corp-datagrid th { font-size: 10px !important; letter-spacing: 0.08em !important; font-weight: 700 !important; }
-        .corp-card-header { font-size: 11px !important; letter-spacing: 0.08em !important; }
+        body[data-layout="corporate"] .corp-datagrid th { font-size: 11px; letter-spacing: 0.05em; font-weight: 600; }
+        .corp-card-header { font-size: 11px !important; font-weight: 600 !important; text-transform: none !important; letter-spacing: normal !important; }
         .corp-status-bar { font-variant-numeric: tabular-nums; }
 
         /* toast slide-in */
@@ -2929,6 +2939,15 @@
         /* sidebar tree expand animation */
         @keyframes corp-tree-expand { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
         body[data-layout="corporate"] .corp-tree-child { animation: corp-tree-expand 0.12s ease-out; }
+
+        /* empty state placeholder */
+        .corp-empty-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 20px; text-align: center; }
+        .corp-empty-title { font-size: 13px; color: var(--corp-text-secondary); }
+        .corp-empty-text { font-size: 12px; color: var(--corp-text-muted); }
+
+        /* console preview tile */
+        .corp-console-tile { background: var(--corp-surface-2); border: 1px solid var(--corp-border-medium); border-radius: 4px; box-shadow: var(--corp-shadow-sm); transition: border-color 0.15s, box-shadow 0.15s; cursor: pointer; }
+        .corp-console-tile:hover { border-color: var(--corp-accent); box-shadow: var(--corp-shadow-md); }
 
         /* ── Cloud skin (Preview): deep navy + teal, airy resource-first card-grid — NS 2026-06-05 ──
            Base colors are also regenerated by applyTheme('cloud') from PEGAPROX_THEMES.cloud;

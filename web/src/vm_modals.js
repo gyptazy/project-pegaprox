@@ -1923,7 +1923,7 @@
                             <div className="flex gap-5">
                                 {/* Left: Console Preview Area */}
                                 <div className="flex-shrink-0" style={{width: '280px'}}>
-                                    <div className="relative flex items-center justify-center overflow-hidden" style={{height: '180px', background: consoleShot ? '#000' : 'var(--corp-surface-1)', border: '1px solid var(--corp-border-medium)'}}>
+                                    <div className="corp-console-tile relative flex items-center justify-center overflow-hidden" style={{height: '180px', background: consoleShot ? '#000' : 'var(--corp-surface-1)', border: '1px solid var(--corp-border-medium)'}}>
                                         {consoleShot ? (
                                             <React.Fragment>
                                                 <img src={consoleShot} alt={t('consolePreview') || 'Console preview'}
@@ -1975,15 +1975,22 @@
                                     </table>
                                     {/* stats */}
                                     <div className="mt-3 flex gap-4">
-                                        <div className="flex items-center gap-1.5">
-                                            <div className="w-2 h-2 rounded-full" style={{background: 'var(--corp-metric-cpu)'}}></div>
-                                            <span className="text-[12px]" style={{color: '#adbbc4'}}>{t('cpuUsage')}</span>
-                                            <span className="text-[12px] font-medium" style={{color: '#e9ecef'}}>{cpuPercent}%</span>
+                                        <div className="flex flex-col gap-1 min-w-[90px]">
+                                            <div className="flex items-center gap-1.5">
+                                                <div className="w-2 h-2 rounded-full" style={{background: 'var(--corp-metric-cpu)'}}></div>
+                                                <span className="text-[12px]" style={{color: '#adbbc4'}}>{t('cpuUsage')}</span>
+                                                <span className="text-[12px] font-medium" style={{color: '#e9ecef'}}>{cpuPercent}%</span>
+                                            </div>
+                                            {/* LW: usage bar under the value */}
+                                            <div className="corp-capacity-bar"><div style={{width: Math.min(cpuPercent, 100) + '%', background: cpuPercent >= 90 ? 'var(--corp-thresh-crit)' : cpuPercent >= 70 ? 'var(--corp-thresh-warn)' : 'var(--corp-thresh-ok)'}} /></div>
                                         </div>
-                                        <div className="flex items-center gap-1.5">
-                                            <div className="w-2 h-2 rounded-full" style={{background: 'var(--corp-metric-ram)'}}></div>
-                                            <span className="text-[12px]" style={{color: '#adbbc4'}}>{t('ramUsage')}</span>
-                                            <span className="text-[12px] font-medium" style={{color: '#e9ecef'}}>{formatBytes(vm.mem)}</span>
+                                        <div className="flex flex-col gap-1 min-w-[90px]">
+                                            <div className="flex items-center gap-1.5">
+                                                <div className="w-2 h-2 rounded-full" style={{background: 'var(--corp-metric-ram)'}}></div>
+                                                <span className="text-[12px]" style={{color: '#adbbc4'}}>{t('ramUsage')}</span>
+                                                <span className="text-[12px] font-medium" style={{color: '#e9ecef'}}>{formatBytes(vm.mem)}</span>
+                                            </div>
+                                            <div className="corp-capacity-bar"><div style={{width: Math.min(ramPercent, 100) + '%', background: ramPercent >= 90 ? 'var(--corp-thresh-crit)' : ramPercent >= 70 ? 'var(--corp-thresh-warn)' : 'var(--corp-thresh-ok)'}} /></div>
                                         </div>
                                         <div className="flex items-center gap-1.5">
                                             <div className="w-2 h-2 rounded-full" style={{background: 'var(--corp-metric-disk)'}}></div>
@@ -2464,13 +2471,19 @@
                                     </React.Fragment>
                                 );
 
-                                if (snapsLoading) return <div className="text-center py-6 text-xs" style={{color: '#728b9a'}}>Loading...</div>;
+                                if (snapsLoading) return <div className="corp-vm-modal-state"><div className="corp-vm-spinner"></div></div>;
 
                                 const stdSnaps = snapshots.filter(s => s.name !== 'current');
                                 const tree = buildSnapTree(stdSnaps);
 
                                 if (stdSnaps.length === 0 && efficientSnapshots.length === 0)
-                                    return <div className="text-center py-8 text-xs" style={{color: '#728b9a'}}>{t('noSnapshots') || 'No snapshots'}</div>;
+                                    return (
+                                        <div className="corp-empty-state">
+                                            <Icons.Clock style={{color: 'var(--corp-border-medium)'}} />
+                                            <div className="corp-empty-title">{t('noSnapshots') || 'No snapshots'}</div>
+                                            <div className="corp-empty-text">{t('noSnapshotsHint') || 'Take a snapshot to capture the current state.'}</div>
+                                        </div>
+                                    );
 
                                 return (<>
                                     {tree.map(root => renderSnapNode(root, 0))}

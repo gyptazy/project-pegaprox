@@ -500,7 +500,7 @@
 
             return (
                 <div className="corp-overview-card">
-                    <div style={{width: 48, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0}}>
+                    <div className="corp-stat-icon" style={{width: 48, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0}}>
                         <Icons.Activity className="w-6 h-6" style={{color: risky.length > 0 ? statusColor(worst?.status) : 'var(--corp-accent)'}} />
                     </div>
                     <div style={{flex: 1, minWidth: 0}}>
@@ -14524,7 +14524,7 @@
                                                                 </div>
                                                             </div>
                                                             <div className="corp-overview-card">
-                                                                <div style={{width: 48, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0}}>
+                                                                <div className="corp-stat-icon" style={{width: 48, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0}}>
                                                                     <Icons.Monitor className="w-6 h-6" style={{color: 'var(--corp-accent)'}} />
                                                                 </div>
                                                                 <div>
