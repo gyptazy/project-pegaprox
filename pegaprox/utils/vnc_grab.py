@@ -212,3 +212,41 @@ def to_png_thumbnail(img, max_width=480):
     out = io.BytesIO()
     img.save(out, format='PNG', optimize=True)
     return out.getvalue()
+
+
+# NS Jun 2026 — preferred grab for the console tile. QEMU 'screendump' over
+# qm monitor does NOT open a vncproxy, so it never shows up as a "console
+# opened" task in the PVE log (the whole reason we moved off the RFB path).
+# The frame comes back as a PPM; gzip+base64 it over the same node-exec path
+# v2p already uses, then PIL -> PNG. Needs node exec (API /execute or SSH) —
+# on API-token-only clusters without SSH this just fails and the tile falls
+# back to the icon.
+def screendump_to_png(pve_mgr, node, vmid, max_width=480, timeout=20):
+    from pegaprox.utils.ssh import _pve_node_exec
+    from PIL import Image
+    import base64 as _b64, gzip as _gz
+    vmid = int(vmid)  # route already coerces, but be explicit before shelling out
+    remote = f"/tmp/pp_shot_{vmid}.ppm"
+    cmd = (f"echo screendump {remote} | qm monitor {vmid} >/dev/null 2>&1; "
+           f"gzip -c {remote} 2>/dev/null | base64 | tr -d '\\n'; "
+           f"rm -f {remote}")
+    rc, out, err = _pve_node_exec(pve_mgr, node, cmd, timeout=timeout)
+    b64 = (out or '').strip()
+    if not b64:
+        raise IOError(f"screendump produced no data (rc={rc}, err={str(err)[:120]})")
+    try:
+        ppm = _gz.decompress(_b64.b64decode(b64))
+    except Exception as e:
+        raise IOError(f"screendump decode failed: {e}")
+    img = Image.open(io.BytesIO(ppm))
+    img.load()
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    # A powered-off / DPMS-asleep display dumps as pure black. Showing a black
+    # rectangle looks broken — treat an essentially blank frame as "no preview"
+    # so the tile keeps its icon instead. (Active screens, even dark terminals,
+    # have pixels well above this.)
+    ex = img.getextrema()  # ((rmin,rmax),(gmin,gmax),(bmin,bmax))
+    if max(hi for _lo, hi in ex) <= 10:
+        raise IOError("blank framebuffer (display likely off)")
+    return to_png_thumbnail(img, max_width=max_width)

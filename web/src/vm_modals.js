@@ -8,6 +8,13 @@
         // Running<->Not installed. Nico saw it "springen" in the corporate layout.
         const _guestInfoCache = {};
 
+        // NS: console-tile screenshot cache per VM. The corporate detail re-mounts
+        // on every VM-list poll, which used to re-fire the screenshot fetch every
+        // few seconds (→ a qm screendump each time). Reuse the last frame for
+        // SHOT_REUSE_MS so a re-mount doesn't re-grab; manual refresh bypasses it.
+        const _consoleShotCache = {};   // {cluster:vmid: {url, ts}}
+        const SHOT_REUSE_MS = 60000;
+
         // Delete VM Modal Component
         // NS: Added confirmation input after someone accidentally deleted prod VM
         // Better safe than sorry...
@@ -1473,12 +1480,21 @@
             // monitor icon. Falls back silently to the icon when the grab can't run
             // (stopped, headless, behind a tunnel that's down, perm). Cached ~30s
             // server-side so re-renders don't keep hitting vncproxy.
-            const [consoleShot, setConsoleShot] = useState(null);
+            const shotKey = `${clusterId}:${vm.vmid}`;
+            const [consoleShot, setConsoleShot] = useState(() => {
+                const c = _consoleShotCache[shotKey];
+                return c ? c.url : null;
+            });
             const [shotLoading, setShotLoading] = useState(false);
             const [shotNonce, setShotNonce] = useState(0);  // bump = force fresh grab
-            const shotUrlRef = useRef(null);
             useEffect(() => {
                 if (!isQemu || !isRunning) { setConsoleShot(null); return; }
+                // reuse a recent frame on re-mount/poll instead of re-grabbing
+                const cached = _consoleShotCache[shotKey];
+                if (shotNonce === 0 && cached && (Date.now() - cached.ts) < SHOT_REUSE_MS) {
+                    setConsoleShot(cached.url);
+                    return;
+                }
                 let cancelled = false;
                 setShotLoading(true);
                 const q = `?n=${shotNonce}` + (shotNonce > 0 ? '&fresh=1' : '');
@@ -1488,18 +1504,16 @@
                     .then(blob => {
                         if (cancelled) return;
                         const next = (blob && blob.size) ? URL.createObjectURL(blob) : null;
-                        if (shotUrlRef.current) URL.revokeObjectURL(shotUrlRef.current);  // drop the old frame
-                        shotUrlRef.current = next;
+                        const prev = _consoleShotCache[shotKey];
+                        if (prev && prev.url && prev.url !== next) URL.revokeObjectURL(prev.url);  // drop the old frame
+                        if (next) _consoleShotCache[shotKey] = { url: next, ts: Date.now() };
+                        else delete _consoleShotCache[shotKey];
                         setConsoleShot(next);
                     })
-                    .catch(() => { if (!cancelled) setConsoleShot(null); })
+                    .catch(() => { if (!cancelled) setConsoleShot(_consoleShotCache[shotKey]?.url || null); })
                     .finally(() => { if (!cancelled) setShotLoading(false); });
                 return () => { cancelled = true; };
             }, [vm.vmid, vm.status, clusterId, shotNonce]);
-            // revoke the last object URL when we leave the view
-            useEffect(() => () => {
-                if (shotUrlRef.current) { URL.revokeObjectURL(shotUrlRef.current); shotUrlRef.current = null; }
-            }, []);
 
             // LW Apr 2026 (#250) — per-VM web link (browser-local; keyed by cluster:vmid)
             const webLinkKey = `${clusterId}:${vm.vmid}`;
