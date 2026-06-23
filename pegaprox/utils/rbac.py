@@ -492,6 +492,32 @@ _pool_membership_cache = {}
 POOL_CACHE_TTL = 300  # 5 minutes - pools rarely change
 POOL_CACHE_STALE_TTL = 30  # Return stale data for 30s while refreshing
 _pool_cache_lock = threading.Lock()
+# MK Jun 2026 (#555) — when a build can't enumerate members (token lacks Pool.Audit,
+# member fetch errored, or a remote cluster is mid-connect) it produced an EMPTY map
+# that got pinned fresh for the full TTL — so every pool-only portal user resolved to
+# nothing for 5 min with no signal and no retry. Cache such a result for only this
+# short window so it self-heals, and shout once so the operator can fix the token.
+POOL_CACHE_EMPTY_TTL = 25
+
+
+def _stamp_pool_cache(cluster_id, pools, membership, had_error):
+    """Return the timestamp to cache a freshly-built membership map under. A build
+    that saw pools but resolved zero members (or hit a fetch error) is suspect —
+    don't pin it as fresh; date it so it expires in POOL_CACHE_EMPTY_TTL and warn."""
+    import time as _t
+    now = _t.time()
+    suspect = bool(pools) and (not membership or had_error)
+    if suspect:
+        logging.warning(
+            f"[POOL-CACHE] cluster {cluster_id}: {len(pools)} pool(s) but {len(membership)} "
+            f"member(s) resolved{' (member fetch errored)' if had_error else ''} — the cluster "
+            f"API token likely lacks Pool.Audit; pool-based portal/console access won't work "
+            f"until the token can enumerate pool members. Retrying soon."
+        )
+        # date it so age already exceeds (TTL - EMPTY_TTL) -> expires in ~EMPTY_TTL
+        return now - (POOL_CACHE_TTL - POOL_CACHE_EMPTY_TTL)
+    return now
+
 
 def _refresh_pool_cache_async(cluster_id: str):
     """Background refresh of pool cache - doesn't block requests"""
@@ -505,31 +531,33 @@ def _refresh_pool_cache_async(cluster_id: str):
         pools = mgr.get_pools()
         
         membership = {}
+        had_error = False
         for pool in pools:
             pool_id = pool.get('poolid')
             if not pool_id:
                 continue
-            
+
             try:
                 pool_data = mgr.get_pool_members(pool_id)
                 members = pool_data.get('members', [])
-                
+
                 for member in members:
                     vmid = member.get('vmid')
                     mtype = member.get('type')
                     if vmid and mtype in ('qemu', 'lxc'):
                         membership[f"{vmid}:{mtype}"] = pool_id
             except Exception as e:
+                had_error = True
                 logging.warning(f"[POOL-CACHE] Error getting members for pool {pool_id}: {e}")
                 continue
-        
+
         with _pool_cache_lock:
             _pool_membership_cache[cluster_id] = {
                 'data': membership,
-                'timestamp': time.time(),
+                'timestamp': _stamp_pool_cache(cluster_id, pools, membership, had_error),
                 'refreshing': False
             }
-        
+
         logging.info(f"[POOL-CACHE] Refreshed cache for cluster {cluster_id}: {len(membership)} VMs in pools")
         
     except Exception as e:
@@ -579,30 +607,32 @@ def get_pool_membership_cache(cluster_id: str) -> dict:
         pools = mgr.get_pools()
         
         membership = {}
+        had_error = False
         for pool in pools:
             pool_id = pool.get('poolid')
             if not pool_id:
                 continue
-            
+
             try:
                 pool_data = mgr.get_pool_members(pool_id)
                 members = pool_data.get('members', [])
-                
+
                 for member in members:
                     vmid = member.get('vmid')
                     mtype = member.get('type')
                     if vmid and mtype in ('qemu', 'lxc'):
                         membership[f"{vmid}:{mtype}"] = pool_id
-            except:
+            except Exception:
+                had_error = True
                 continue
-        
+
         with _pool_cache_lock:
             _pool_membership_cache[cluster_id] = {
                 'data': membership,
-                'timestamp': now,
+                'timestamp': _stamp_pool_cache(cluster_id, pools, membership, had_error),
                 'refreshing': False
             }
-        
+
         logging.info(f"[POOL-CACHE] Initial cache for cluster {cluster_id}: {len(membership)} VMs in pools")
         return membership
         
