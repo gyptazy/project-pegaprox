@@ -47,6 +47,26 @@ def _build_avatar_url(user: dict) -> str:
     return ''
 
 
+def _caller_tenant_or_none():
+    # MK Jun 2026 (sec-review): a global admin manages every tenant; a tenant-scoped admin
+    # (custom role carrying admin.users) is confined to their own tenant. Returns the tenant
+    # to scope to, or None when the caller is a global admin (no restriction).
+    if request.session.get('role') == ROLE_ADMIN:
+        return None
+    caller = get_db().get_user(request.session.get('user', '')) or {}
+    return caller.get('tenant_id', DEFAULT_TENANT_ID)
+
+
+_ROLE_LEVEL = {ROLE_ADMIN: 3, ROLE_USER: 2, ROLE_VIEWER: 1}
+
+
+def _role_at_or_below_caller(target_role):
+    # MK: stop a delegate holding admin.users from minting/assigning a role above their own
+    # tier. Unknown/custom roles map to the 'user' level.
+    caller_lvl = _ROLE_LEVEL.get(request.session.get('role'), 2)
+    return _ROLE_LEVEL.get(target_role, 2) <= caller_lvl
+
+
 def _parse_avatar_data_url(value: str):
     """Validate avatar data URL and return (mime, base64-data)."""
     if not isinstance(value, str) or not value.startswith('data:'):
@@ -242,6 +262,9 @@ def admin_disable_2fa(username):
         return jsonify({'error': 'User not found'}), 404
     
     user = users_db[username]
+    _ct = _caller_tenant_or_none()
+    if _ct is not None and user.get('tenant_id', DEFAULT_TENANT_ID) != _ct:
+        return jsonify({'error': 'Access denied: cannot manage 2FA for users in other tenants'}), 403
     user['totp_enabled'] = False
     user.pop('totp_secret', None)
     user.pop('totp_pending_secret', None)
@@ -278,7 +301,10 @@ def admin_change_password(username):
         return jsonify({'error': error_msg}), 400
     
     user = users_db[username]
-    
+    _ct = _caller_tenant_or_none()
+    if _ct is not None and user.get('tenant_id', DEFAULT_TENANT_ID) != _ct:
+        return jsonify({'error': 'Access denied: cannot change passwords for users in other tenants'}), 403
+
     # NS: Block password reset for LDAP/OIDC users - their password is managed externally
     if user.get('auth_source', 'local') in ('ldap', 'oidc', 'entra'):
         provider_name = {'ldap': 'LDAP/Active Directory', 'oidc': 'OIDC provider', 'entra': 'Microsoft Entra ID'}.get(user['auth_source'], 'identity provider')
@@ -326,10 +352,13 @@ def admin_change_password(username):
 def get_users():
     """Get list of all users (admin only)"""
     users_db = load_users()
-    
+    _ct = _caller_tenant_or_none()  # tenant-scoped admins only see their own tenant
+
     # Return users without password info
     users_list = []
     for username, user in users_db.items():
+        if _ct is not None and user.get('tenant_id', DEFAULT_TENANT_ID) != _ct:
+            continue
         users_list.append({
             'username': username,
             'role': user['role'],
@@ -364,7 +393,9 @@ def get_locked_ips():
     current_time = time.time()
     locked_ips = []
     locked_users = []
-    
+    _ct = _caller_tenant_or_none()
+    _users_db = load_users() if _ct is not None else {}
+
     # Get locked IPs
     for ip, info in login_attempts_by_ip.items():
         locked_until = info.get('locked_until', 0)
@@ -376,10 +407,12 @@ def get_locked_ips():
                 'attempt_count': len(info.get('attempts', []))
             })
     
-    # Get locked usernames
+    # Get locked usernames (tenant-scoped admins only see their own tenant's users)
     for username, info in login_attempts_by_user.items():
         locked_until = info.get('locked_until', 0)
         if locked_until > current_time:
+            if _ct is not None and _users_db.get(username, {}).get('tenant_id', DEFAULT_TENANT_ID) != _ct:
+                continue
             locked_users.append({
                 'username': username,
                 'locked_until': locked_until,
@@ -421,9 +454,15 @@ def unlock_user(username):
     MK: New endpoint for username-based lockout management
     """
     global login_attempts_by_user
-    
+
     username = username.lower()
-    
+
+    _ct = _caller_tenant_or_none()
+    if _ct is not None:
+        _target = load_users().get(username, {})
+        if _target and _target.get('tenant_id', DEFAULT_TENANT_ID) != _ct:
+            return jsonify({'error': 'Access denied: cannot unlock users in other tenants'}), 403
+
     if username in login_attempts_by_user:
         del login_attempts_by_user[username]
         logging.info(f"Admin manually unlocked user: {_sl(username)}")
@@ -710,7 +749,15 @@ def create_user():
     tenants = load_tenants()
     if tenant_id not in tenants:
         return jsonify({'error': 'Invalid tenant_id'}), 400
-    
+
+    # tenant-scoped admins create only inside their own tenant, and nobody can mint a
+    # user that outranks them
+    _ct = _caller_tenant_or_none()
+    if _ct is not None and tenant_id != _ct:
+        return jsonify({'error': 'Access denied: cannot create users in other tenants'}), 403
+    if not _role_at_or_below_caller(role):
+        return jsonify({'error': 'Cannot create a user with a role higher than your own'}), 403
+
     # validate permissions are valid
     for p in permissions + denied_permissions:
         if p not in PERMISSIONS:
@@ -771,12 +818,26 @@ def update_user(username):
     
     data = request.get_json()
     user = users_db[username]
-    
+
+    # tenant-scoped admins can only touch users in their own tenant, and can't move a user
+    # out of it
+    _ct = _caller_tenant_or_none()
+    if _ct is not None:
+        if user.get('tenant_id', DEFAULT_TENANT_ID) != _ct:
+            return jsonify({'error': 'Access denied: cannot modify users in other tenants'}), 403
+        if data.get('tenant_id', _ct) != _ct:
+            return jsonify({'error': 'Access denied: cannot move users to other tenants'}), 403
+
     # Update fields
     if 'role' in data:
         # NS: Updated to support custom roles
         if not is_valid_role(data['role']):
             return jsonify({'error': 'Invalid role'}), 400
+        # can't escalate yourself, and can't hand out a role above your own tier
+        if username == request.session.get('user'):
+            return jsonify({'error': 'Cannot modify your own role'}), 403
+        if not _role_at_or_below_caller(data['role']):
+            return jsonify({'error': 'Cannot assign a role with higher privileges than your own'}), 403
         # Prevent last admin from losing admin role
         if user['role'] == ROLE_ADMIN and data['role'] != ROLE_ADMIN:
             admin_count = sum(1 for u in users_db.values() if u['role'] == ROLE_ADMIN and u.get('enabled', True))
@@ -873,6 +934,9 @@ def delete_user(username):
     
     # Prevent deleting last admin
     user = users_db[username]
+    _ct = _caller_tenant_or_none()
+    if _ct is not None and user.get('tenant_id', DEFAULT_TENANT_ID) != _ct:
+        return jsonify({'error': 'Access denied: cannot delete users in other tenants'}), 403
     if user['role'] == ROLE_ADMIN:
         admin_count = sum(1 for u in users_db.values() if u['role'] == ROLE_ADMIN)
         if admin_count <= 1:
@@ -1226,14 +1290,14 @@ def create_custom_role():
     user = users.get(request.session['user'], {})
     if user.get('role') != ROLE_ADMIN:
         user_tenant = user.get('tenant_id', DEFAULT_TENANT_ID)
-        # Force tenant_id to user's own tenant for non-admins
         if tenant_id and tenant_id != user_tenant:
-            log_audit(request.session['user'], 'role.create_denied', 
+            log_audit(request.session['user'], 'role.create_denied',
                      f"Access denied: attempted to create role '{role_id}' in tenant '{tenant_id}' (user tenant: '{user_tenant}')",
                      ip_address=request.remote_addr)
             return jsonify({'error': 'Access denied - cannot create roles in other tenants'}), 403
-        tenant_id = user_tenant if tenant_id else None  # Allow global roles only if explicitly None
-    
+        # pin to own tenant — a non-admin must not create a global (cross-tenant) role
+        tenant_id = user_tenant
+
     custom = get_custom_roles()
     
     # Ensure tenants dict exists
@@ -1298,10 +1362,9 @@ def update_custom_role(role_id):
                      f"Access denied: attempted to update role '{role_id}' in tenant '{tenant_id}' (user tenant: '{user_tenant}')",
                      ip_address=request.remote_addr)
             return jsonify({'error': 'Access denied - cannot update roles in other tenants'}), 403
-        # Force tenant_id to user's own tenant for non-admins
-        if tenant_id:
-            tenant_id = user_tenant
-    
+        # pin to own tenant — a non-admin can't reach a global role this way
+        tenant_id = user_tenant
+
     custom = get_custom_roles()
     
     # find the role
@@ -1360,10 +1423,9 @@ def delete_custom_role(role_id):
                      f"Access denied: attempted to delete role '{role_id}' in tenant '{tenant_id}' (user tenant: '{user_tenant}')",
                      ip_address=request.remote_addr)
             return jsonify({'error': 'Access denied - cannot delete roles in other tenants'}), 403
-        # Force tenant_id to user's own tenant for non-admins
-        if tenant_id:
-            tenant_id = user_tenant
-    
+        # pin to own tenant — a non-admin can't delete a global role this way
+        tenant_id = user_tenant
+
     custom = get_custom_roles()
     found = False
     

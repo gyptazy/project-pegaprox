@@ -451,8 +451,17 @@ def set_user_perms(username):
     
     data = request.json or {}
     tenant_id = data.get('tenant_id')  # if set, update tenant-specific perms
-    
+
     if tenant_id:
+        # MK Jun 2026 (sec-review): only a global admin may set perms in any tenant; a
+        # tenant-scoped admin is confined to their own tenant
+        if request.session.get('role') != ROLE_ADMIN:
+            caller = users_db.get(request.session.get('user', ''), {})
+            if tenant_id != caller.get('tenant_id', DEFAULT_TENANT_ID):
+                log_audit(request.session.get('user', ''), 'security.tenant_access_denied',
+                          f"Denied setting {username} perms in tenant {tenant_id}")
+                return jsonify({'error': 'Access denied: cannot manage permissions for other tenants'}), 403
+
         # per-tenant permissions
         role = data.get('role')
         extra = data.get('extra', [])
@@ -506,7 +515,15 @@ def remove_user_tenant_perms(username, tenant_id):
     
     if username not in users_db:
         return jsonify({'error': 'User not found'}), 404
-    
+
+    # MK Jun 2026 (sec-review): tenant-scoped admins can only touch their own tenant
+    if request.session.get('role') != ROLE_ADMIN:
+        caller = users_db.get(request.session.get('user', ''), {})
+        if tenant_id != caller.get('tenant_id', DEFAULT_TENANT_ID):
+            log_audit(request.session.get('user', ''), 'security.tenant_access_denied',
+                      f"Denied removing {username} perms in tenant {tenant_id}")
+            return jsonify({'error': 'Access denied: cannot manage permissions for other tenants'}), 403
+
     tp = users_db[username].get('tenant_permissions', {})
     if tenant_id in tp:
         del tp[tenant_id]
