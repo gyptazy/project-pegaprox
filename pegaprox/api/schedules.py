@@ -14,12 +14,28 @@ from pegaprox.globals import *
 from pegaprox.models.permissions import *
 from pegaprox.core.db import get_db
 
-from pegaprox.utils.auth import require_auth, load_users
+from pegaprox.utils.auth import require_auth, load_users, build_authz_user
+from pegaprox.utils.rbac import has_permission
 from pegaprox.utils.audit import log_audit
 from pegaprox.api.helpers import check_cluster_access, safe_error
 from pegaprox.api.nodes import cleanup_deleted_scripts, cleanup_orphaned_excluded_vms
 
 bp = Blueprint('schedules', __name__)
+
+
+def _perm_for_action(action):
+    # MK: scheduling an action requires the same permission as running it by hand
+    return {'start': 'vm.start', 'stop': 'vm.stop', 'shutdown': 'vm.stop',
+            'reboot': 'vm.restart', 'snapshot': 'vm.snapshot'}.get(action, 'vm.start')
+
+
+def _require_action_perm(action):
+    # returns an error response if the caller can't perform `action`, else None
+    user = build_authz_user(request.session.get('user', ''), request.session)
+    perm = _perm_for_action(action)
+    if not has_permission(user, perm):
+        return jsonify({'error': f'Permission denied: {perm} required to schedule a {action} action'}), 403
+    return None
 
 # ============================================
 
@@ -511,7 +527,7 @@ def get_schedules():
 
 
 @bp.route('/api/schedules', methods=['POST'])
-@require_auth(perms=['vm.start'])  # Need at least VM start permission
+@require_auth()  # per-action permission checked below
 def create_schedule():
     """Create a new scheduled action
     
@@ -548,7 +564,11 @@ def create_schedule():
     valid_actions = ['start', 'stop', 'shutdown', 'reboot', 'snapshot']
     if data['action'] not in valid_actions:
         return jsonify({'error': f'Action must be one of: {valid_actions}'}), 400
-    
+
+    perm_err = _require_action_perm(data['action'])
+    if perm_err:
+        return perm_err
+
     # Validate schedule type
     valid_types = ['once', 'daily', 'weekly', 'weekdays', 'weekends']
     if data['schedule_type'] not in valid_types:
@@ -599,7 +619,7 @@ def create_schedule():
 
 
 @bp.route('/api/schedules/<int:schedule_id>', methods=['PUT'])
-@require_auth(perms=['vm.start'])
+@require_auth()  # per-action permission checked below
 def update_schedule(schedule_id):
     """Update a scheduled action"""
     data = request.json or {}
@@ -619,7 +639,13 @@ def update_schedule(schedule_id):
         valid_actions = ['start', 'stop', 'shutdown', 'reboot', 'snapshot']
         if data['action'] not in valid_actions:
             return jsonify({'error': f'Action must be one of: {valid_actions}'}), 400
-    
+
+    # need the perm for the effective action — the new one if it's changing, else the
+    # one already stored (so a no-action edit still can't be made without the right perm)
+    perm_err = _require_action_perm(data.get('action', schedule.get('action', 'start')))
+    if perm_err:
+        return perm_err
+
     # Validate time format if being updated
     if 'time' in data:
         try:
@@ -657,7 +683,7 @@ def update_schedule(schedule_id):
 
 
 @bp.route('/api/schedules/<int:schedule_id>', methods=['DELETE'])
-@require_auth(perms=['vm.start'])
+@require_auth()  # per-action permission checked below
 def delete_schedule(schedule_id):
     """Delete a scheduled action"""
     schedules = load_schedules()
@@ -668,6 +694,10 @@ def delete_schedule(schedule_id):
         return jsonify({'error': 'Schedule not found'}), 404
     ok, err = check_cluster_access(schedule.get('cluster_id', ''))
     if not ok: return err
+
+    perm_err = _require_action_perm(schedule.get('action', 'start'))
+    if perm_err:
+        return perm_err
 
     schedules['actions'] = [s for s in schedules.get('actions', []) if s.get('id') != schedule_id]
     
