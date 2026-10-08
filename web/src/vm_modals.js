@@ -1582,6 +1582,8 @@
             const [snapRam, setSnapRam] = useState(false);
             // LW May 2026 — snapshot compare modal state
             const [compareSnap, setCompareSnap] = useState(null);  // { a, b } or null
+            const [backups, setBackups] = useState([]);
+            const [backupsLoading, setBackupsLoading] = useState(false);
 
             const isQemu = vm.type === 'qemu';
             const displayName = vm.name || `${isQemu ? 'VM' : 'CT'} ${vm.vmid}`;
@@ -1694,6 +1696,31 @@
                 if (activeDetailTab === 'snapshots') fetchSnapshots();
                 return () => { snapSeqRef.current++; };
             }, [vm.vmid, clusterId]);
+
+            const fetchBackups = async () => {
+                setBackupsLoading(true);
+                try {
+                    const r = await authFetch(`${API_URL}/clusters/${clusterId}/vms/${vm.node}/${vm.type}/${vm.vmid}/backups`);
+                    if (r?.ok) setBackups(await r.json());
+                    else setBackups([]);
+                } catch(e) { console.error('backups fetch:', e); setBackups([]); }
+                setBackupsLoading(false);
+            };
+
+            // refetch when VM changes while backups tab is open
+            React.useEffect(() => {
+                setBackups([]); setBackupsLoading(false);
+                if (activeDetailTab === 'backups') fetchBackups();
+            }, [vm.vmid, clusterId]);
+
+            const handleDeleteBackup = async (volid, filename) => {
+                if (!confirm(`${t('deleteBackup') || 'Delete backup'} "${filename}"?`)) return;
+                try {
+                    const r = await authFetch(`${API_URL}/clusters/${clusterId}/vms/${vm.node}/${vm.type}/${vm.vmid}/backups/${encodeURIComponent(volid)}`, { method: 'DELETE' });
+                    if (r?.ok) { addToast?.(t('backupDeleted') || 'Backup deleted', 'success'); fetchBackups(); }
+                    else addToast?.(await PegaProxApiErrors.message(r, t('deleteFailed')), 'error');
+                } catch { addToast?.(t('deleteFailed'), 'error'); }
+            };
 
             const handleCreateSnap = async () => {
                 if (!snapName.trim()) return;
@@ -2087,6 +2114,10 @@
                         <button className={activeDetailTab === 'snapshots' ? 'active' : ''}
                             onClick={() => { setActiveDetailTab('snapshots'); fetchSnapshots(); }}>
                             <Icons.Clock className="w-3 h-3 inline mr-1" />{t('snapshotsTab') || 'Snapshots'}
+                        </button>
+                        <button className={activeDetailTab === 'backups' ? 'active' : ''}
+                            onClick={() => { setActiveDetailTab('backups'); fetchBackups(); }}>
+                            <Icons.Archive className="w-3 h-3 inline mr-1" />{t('backups') || 'Backups'}
                         </button>
                         <button onClick={() => onOpenConfig(vm)}>
                             <Icons.Settings className="w-3 h-3 inline mr-1" />{t('configure')}
@@ -2736,6 +2767,70 @@
                                     </>)}
                                 </>);
                             })()}
+                        </div>
+                    )}
+
+                    {/* Backups tab */}
+                    {activeDetailTab === 'backups' && (
+                        <div className="p-4 space-y-3">
+                            <div className="flex items-center justify-between mb-2">
+                                <h3 className="text-[13px] font-medium flex items-center gap-1.5" style={{color: '#e9ecef'}}>
+                                    <Icons.Archive className="w-4 h-4" />{t('backups') || 'Backups'}
+                                    {backups.length > 0 && (
+                                        <span className="text-[11px] font-normal" style={{color: 'var(--corp-text-muted, #728b9a)'}}>
+                                            ({backups.length})
+                                        </span>
+                                    )}
+                                </h3>
+                            </div>
+
+                            {backupsLoading && (
+                                <div className="corp-vm-modal-state"><div className="corp-vm-spinner"></div></div>
+                            )}
+
+                            {!backupsLoading && backups.length === 0 && (
+                                <div className="corp-empty-state">
+                                    <Icons.Archive style={{color: 'var(--corp-border-medium)'}} />
+                                    <div className="corp-empty-title">{t('noBackups') || 'No backups'}</div>
+                                    <div className="corp-empty-text">{t('noBackupsHint') || 'No backups found for this guest across all backup-capable storages.'}</div>
+                                </div>
+                            )}
+
+                            {!backupsLoading && backups.map((backup, i) => (
+                                <div key={backup.volid || i} className="corp-snap-row flex items-center justify-between">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <Icons.Archive className="w-3.5 h-3.5 flex-shrink-0" style={{color: 'var(--corp-accent, #49afd9)'}} />
+                                        <div className="min-w-0">
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                                <span className="text-[13px] font-medium truncate" style={{color: '#e9ecef'}}>{backup.filename}</span>
+                                                <span className="text-[10.5px] px-1.5 py-0" style={{background: 'rgba(255,255,255,0.04)', color: 'var(--corp-text-muted, #728b9a)', border: '1px solid var(--corp-border-subtle)'}}>
+                                                    {backup.storage}
+                                                </span>
+                                                {backup.format && backup.format !== 'unknown' && (
+                                                    <span className="text-[10.5px] px-1.5 py-0" style={{background: 'rgba(73,175,217,0.08)', color: 'var(--corp-accent, #49afd9)', border: '1px solid rgba(73,175,217,0.20)'}}>
+                                                        {backup.format}
+                                                    </span>
+                                                )}
+                                                {backup.size > 0 && (
+                                                    <span className="text-[10.5px]" style={{color: 'var(--corp-text-muted, #728b9a)'}}>
+                                                        {formatBytes(backup.size)}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <div className="text-[11px] mt-0.5" style={{color: 'var(--corp-text-muted, #728b9a)'}}>
+                                                {backup.ctime ? fmtDate(backup.ctime * 1000) : ''}
+                                                {backup.notes && <span className="ml-2" style={{color: '#5a7a8a'}}>— {backup.notes}</span>}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {acts && (
+                                        <button onClick={() => handleDeleteBackup(backup.volid, backup.filename)}
+                                            className="corp-vm-btn corp-vm-btn-danger-ghost flex-shrink-0" title={t('delete')}>
+                                            <Icons.Trash2 className="w-3 h-3" />
+                                        </button>
+                                    )}
+                                </div>
+                            ))}
                         </div>
                     )}
 
